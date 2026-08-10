@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+## Local Commit Policy
+
+After every completed repository change, automatically create a local Git commit with a concise, meaningful message describing the result. Do not wait for a separate request. Keep commits focused, verify the staged diff, and never push unless the user explicitly requests a remote push.
+
 ## Project Structure & Module Organization
 
 This repository contains Windows launchers and PowerShell utilities for Codex and Claude Code sessions stored in WSL.
