@@ -102,7 +102,9 @@ function ConvertTo-WslPath($winPath) {
     '/mnt/' + ($winPath.Substring(0,1).ToLower()) + ($winPath.Substring(2) -replace '\\','/')
 }
 
-$tmpWin  = Join-Path $env:TEMP 'recent-codex'
+# Keep concurrent picker instances from overwriting each other's list, selection,
+# wrapper, and click-state files when the hub shortcut is opened more than once.
+$tmpWin  = Join-Path $env:TEMP ("recent-codex-{0}" -f $PID)
 New-Item -ItemType Directory -Path $tmpWin -Force | Out-Null
 $tmpWsl  = ConvertTo-WslPath $tmpWin
 $listWin = Join-Path $tmpWin 'list.txt';  $listWsl = "$tmpWsl/list.txt"
@@ -121,9 +123,9 @@ $fzfShWin = Join-Path $tmpWin 'fzf.sh';   $fzfShWsl = "$tmpWsl/fzf.sh"
 #
 # transform (not execute-silent) keeps the writes synchronous with fzf's event handling,
 # so a fast click can't race a pending focus write. The file lives in the WSL-local /tmp
-# (not $tmpWsl on /mnt/c) because it's written on every focus change and 9p is slow; only
-# one picker runs at a time, and focus fires on start, so one shared file cannot go stale.
-$clickStateWsl = '/tmp/recent-codex-click.state'
+# (not $tmpWsl on /mnt/c) because it's written on every focus change and 9p is slow.
+# Focus fires on start, so the per-process file cannot go stale within this picker.
+$clickStateWsl = "/tmp/recent-codex-$PID-click.state"
 $clickBinds = @"
     --bind "focus:transform:echo {n} > $clickStateWsl" \
     --bind "left-click:transform:if [ \"\`$(cat $clickStateWsl 2>/dev/null)\" = \"{n}\" ]; then echo accept; fi" \
