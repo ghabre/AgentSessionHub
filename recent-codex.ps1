@@ -592,7 +592,8 @@ function Invoke-Claude($id, $cwd, $transcript, $title) {
     $handoff = New-Handoff $transcript $id $cwd $title
     Write-Host "`r                           `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
-    & $wt -w 0 new-tab --title "claude: $id" `
+    $tabTitle = if ($title) { "claude: $title" } else { "claude: $id" }
+    & $wt -w 0 new-tab --title $tabTitle `
         wsl.exe -d $distro --cd $cwd -- bash -lic "bash $claudeShWsl $handoff"
     Start-Sleep -Milliseconds 300
 }
@@ -964,7 +965,8 @@ while ($true) {
         if ($id -eq '__NEW__')  { Invoke-NewSession $tool; continue }   # top row: start fresh
         $title = $parts[4]
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
-        & $wt -w 0 new-tab --title $id `
+        $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
+        & $wt -w 0 new-tab --title $tabTitle `
             wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
     }
