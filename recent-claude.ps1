@@ -209,7 +209,8 @@ $codexShWin = Join-Path $tmpWin 'codex.sh'; $codexShWsl = "$tmpWsl/codex.sh"
 $codexSh = @"
 #!/bin/bash
 # `$1 = handoff markdown path. Starts codex with the handoff as its opening prompt.
-codex "Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
+transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
+codex "[Transitioned from Claude; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($codexShWin, $codexSh)
 
@@ -354,25 +355,36 @@ function Get-Sessions {
                 $customTitle = $c.customTitle; $aiTitle = $c.aiTitle
             } else {
                 $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null
+                $transitionSource = $null; $transitionTitle = $null
                 foreach ($line in [System.IO.File]::ReadLines($winPath)) {
                     if (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
                     if (-not $fallback -and $line -match '"summary"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
                     if (-not $fallback -and $line -match '"role"\s*:\s*"user".*?"content"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
+                    if (-not $transitionSource -and $line -match '\[Transitioned from Codex; inherited title: (.*?)\]') {
+                        $transitionSource = 'Codex'; $transitionTitle = $Matches[1]
+                    }
                 }
                 $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback
-                                      customTitle = $customTitle; aiTitle = $aiTitle }
+                                      customTitle = $customTitle; aiTitle = $aiTitle
+                                      transitionSource = $transitionSource; transitionTitle = $transitionTitle }
             }
             if (-not $cwd) { return }
 
             # Title priority: live rename (sessions/) > rename in transcript > auto title > deduced
             $title = Get-RealName $meta $id
             if (-not $title) { $title = $customTitle }
+            if ($c -and "$($c.mtime)" -eq $mtime) {
+                $transitionSource = $c.transitionSource; $transitionTitle = $c.transitionTitle
+            }
+            if (-not $title -and $transitionTitle) { $title = $transitionTitle }
             if (-not $title) { $title = $aiTitle }
             if (-not $title) { $title = if ($fallback) { $fallback } else { '(no title)' } }
             $title = $title -replace '\\"','"'
             $title = $title -replace '\\[nrt]',' ' -replace '\s+',' '
+            $handoffTitle = $title
+            if ($transitionSource) { $title = "↪ ${transitionSource}: $title" }
             if ($title.Length -gt 50) { $title = $title.Substring(0,50) }
 
             $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
@@ -382,7 +394,7 @@ function Get-Sessions {
             $tag    = if ($status -and $status -ne 'idle') { "[$status] " } else { '' }
 
             # display <TAB> id <TAB> cwd <TAB> transcript (only col 1 is shown; --with-nth=1)
-            "{0}{1} - {2} - {3} ago [..-{4}]`t{5}`t{6}`t{7}" -f $tag, $folder, $title, $age, $shortId, $id, $cwd, $winPath
+            "{0}{1} - {2} - {3} ago [..-{4}]`t{5}`t{6}`t{7}`t{8}" -f $tag, $folder, $title, $age, $shortId, $id, $cwd, $winPath, $handoffTitle
         }
 
     try { $cache | ConvertTo-Json -Depth 3 | Set-Content $cacheFile } catch {}
@@ -568,15 +580,17 @@ function ConvertTo-ChatMarkdown($msgs) {
 }
 
 # Export a transcript as a chat-only markdown handoff and return its WSL path.
-function New-Handoff($transcript, $id, $cwd) {
+function New-Handoff($transcript, $id, $cwd, $title) {
     $msgs = @(Get-ChatMessages $transcript)
     if (-not $msgs) { return $null }
+    $safeTitle = "$title" -replace '[\r\n\]]', ' '
 
     $head = @(
         "# Handoff from a Claude Code session"
         ""
         "- Session id: ``$id``"
         "- Repo / working dir: ``$cwd`` (you are running in it now)"
+        "- Conversation title: $safeTitle"
         "- Exported: $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
         "- Source transcript: ``$transcript``"
         ""
@@ -596,12 +610,12 @@ function New-Handoff($transcript, $id, $cwd) {
 }
 
 # Alt-C: continue this conversation in codex, same folder, seeded with the handoff.
-function Invoke-Codex($id, $cwd, $transcript) {
+function Invoke-Codex($id, $cwd, $transcript, $title) {
     if (-not $transcript -or -not (Test-Path $transcript)) {
         Write-Host "No transcript found for $id"; Start-Sleep -Milliseconds 900; return
     }
     Write-Host "Exporting chat for codex..." -NoNewline
-    $handoff = New-Handoff $transcript $id $cwd
+    $handoff = New-Handoff $transcript $id $cwd $title
     Write-Host "`r                           `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     & $wt -w 0 new-tab --title "codex: $id" `
@@ -974,7 +988,8 @@ while ($true) {
             Invoke-CopyExport $id $cwd $tr; continue
         }
         if ($id -eq '__NEW__')  { Invoke-NewSession $tool; continue }   # top row: start fresh
-        if ($tool -eq 'codex')  { Invoke-Codex $id $cwd $tr; continue }  # resume in codex
+        $title = $parts[4]
+        if ($tool -eq 'codex')  { Invoke-Codex $id $cwd $tr $title; continue }  # resume in codex
         & $wt -w 0 new-tab --title $id `
             wsl.exe -d $distro --cd $cwd -- bash -lic "claude --resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next

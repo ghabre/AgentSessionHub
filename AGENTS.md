@@ -9,7 +9,7 @@ After every completed repository change, automatically create a local Git commit
 This repository contains Windows launchers and PowerShell utilities for Codex and Claude Code sessions stored in WSL.
 
 - `recent-codex.ps1` and `recent-claude.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
-- `recent-*.cmd` and `*.lnk` files are Windows entry points; keep them aligned with the corresponding PowerShell scripts.
+- `recent-*.cmd` and `*.lnk` files are individual Windows entry points. `codex_n_claude.cmd` and its shortcut open both pickers as tabs; keep launchers aligned with their PowerShell scripts.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude}/` contains generated transcript archives. Treat these as data, not source, and do not edit archives manually.
 
