@@ -146,9 +146,11 @@ $clickBinds
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
 
-# scan.sh: enumerate transcripts natively (find over \\wsl$ from Windows is slow, and
-# wsl.exe mangles backslash escapes like \t when passed as arguments -- a script file
-# keeps them intact). Emits the 50 most-recent as "epoch-mtime<TAB>linux-path".
+# scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
+# slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
+# script file keeps them intact). Claude stores internal agents under subagents/, so
+# exclude that path before taking the newest 50. This mirrors the Codex metadata filter.
+# Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
