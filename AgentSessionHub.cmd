@@ -14,4 +14,4 @@ pause
 exit /b 1
 
 :launch
-"%terminal%" -w 0 new-tab --title "Agent Session Hub - Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1" ; new-tab --title "Agent Session Hub - Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"
+"%terminal%" -w new new-tab --title "Agent Session Hub - Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1" ; new-tab --title "Agent Session Hub - Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"
