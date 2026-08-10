@@ -146,13 +146,21 @@ $clickBinds
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
 
-# scan.sh: enumerate transcripts natively (find over \\wsl$ from Windows is slow, and
-# wsl.exe mangles backslash escapes like \t when passed as arguments -- a script file
-# keeps them intact). Emits the 50 most-recent as "epoch-mtime<TAB>linux-path".
+# scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
+# slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
+# script file keeps them intact). Approval reviewers and other internal agents are stored
+# beside real sessions, so reject session_meta records marked as subagents before taking
+# the newest 50. Otherwise their injected review prompt becomes a repeated fake title.
+# Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
 find "/home/$wslUser/.codex/sessions" -name '*.jsonl' -printf '%T@\t%p\n' 2>/dev/null |
+while IFS=`$'\t' read -r session_mtime session_path; do
+    if ! head -n 1 "`$session_path" | grep -q '"thread_source":"subagent"'; then
+        printf '%s\t%s\n' "`$session_mtime" "`$session_path"
+    fi
+done |
     sort -rn | head -50
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($scanShWin, $scanSh)
