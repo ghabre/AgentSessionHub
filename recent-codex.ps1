@@ -312,7 +312,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-codex-cache-v3.json'
+$cacheFile = Join-Path $env:TEMP 'recent-codex-cache-v4.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -322,12 +322,12 @@ if (Test-Path $cacheFile) {
     } catch {}
 }
 
-# Ignore host-injected context records when deriving a title from user messages.
+# Ignore host-injected XML-style records when deriving a title from user messages.
 function Get-TitleCandidate($text) {
     if (-not ($text -is [string])) { return $null }
     $candidate = $text.Trim()
     if (-not $candidate) { return $null }
-    if ($candidate -match '(?is)^<(environment_context|permissions|collaboration_mode|apps_instructions|plugins_instructions|local-command-[^>\s]+)\b') { return $null }
+    if ($candidate -match '(?s)^<[^>\r\n]+>') { return $null }
     if ($candidate -match '(?is)^# AGENTS\.md instructions\b') { return $null }
     return $candidate
 }
