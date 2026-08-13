@@ -469,7 +469,8 @@ function Invoke-NewSession($tool) {
     $name = $cols[0]; $path = $cols[1]
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
-    & $wt -w $wtWindow new-tab --title $title `
+    $titleArgs = if ($tool -eq 'codex') { @('--title', $title, '--suppressApplicationTitle') } else { @('--title', $title) }
+    & $wt -w $wtWindow new-tab @titleArgs `
         wsl.exe -d $distro --cd $path -- bash -lic $tool
     Start-Sleep -Milliseconds 300
 }
@@ -645,7 +646,7 @@ function Invoke-Codex($id, $cwd, $transcript, $title) {
     Write-Host "`r                           `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-    & $wt -w $wtWindow new-tab --title $tabTitle `
+    & $wt -w $wtWindow new-tab --title $tabTitle --suppressApplicationTitle `
         wsl.exe -d $distro --cd $cwd -- bash -lic "bash $codexShWsl $handoff"
     Start-Sleep -Milliseconds 300
 }
@@ -928,7 +929,9 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    & $wt -w $wtWindow new-tab --title ("{0}: combined x{1}" -f $tool, $items.Count) `
+    $combinedTitle = "{0}: combined x{1}" -f $tool, $items.Count
+    $titleArgs = if ($tool -eq 'codex') { @('--title', $combinedTitle, '--suppressApplicationTitle') } else { @('--title', $combinedTitle) }
+    & $wt -w $wtWindow new-tab @titleArgs `
         wsl.exe -d $distro --cd $cwd -- bash -lic "bash $comboShWsl $tool $handoff"
     Start-Sleep -Milliseconds 300
 }
