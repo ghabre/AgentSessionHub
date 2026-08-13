@@ -34,7 +34,7 @@
 #
 # On startup it also snapshots the transcripts (~/.codex/sessions, session_index.jsonl,
 # plus history.jsonl) to a .tar.gz under .\backups\codex, but only if the newest snapshot is
-# more than 5 hours old, and
+# more than 24 hours old, and
 # it keeps the 10 most recent. They land on the Windows side on purpose: the originals only
 # exist inside the WSL VHD. Override the location with $env:CODEX_BACKUP_DIR.
 #
@@ -242,7 +242,7 @@ $comboSh = @"
 # background. Override the location with $env:CODEX_BACKUP_DIR.
 $backupDir    = if ($env:CODEX_BACKUP_DIR) { $env:CODEX_BACKUP_DIR } else { Join-Path $PSScriptRoot 'backups\codex' }
 $backupDirWsl = ConvertTo-WslPath $backupDir
-$backupEvery  = 5    # hours between snapshots
+$backupEvery  = 24   # hours between snapshots
 $backupKeep   = 10   # snapshots retained; older ones are pruned
 
 # backup.sh: throttle, snapshot, prune. All three decisions are driven by ONE source of
@@ -364,6 +364,12 @@ function Get-Sessions {
                         if ($fallback -match '^\[Transitioned from Claude; inherited title: (.*?)\]') {
                             $transitionSource = 'Claude'; $transitionTitle = $Matches[1]
                         }
+                    }
+                    # Newer Codex transcripts may omit event_msg for some sessions but
+                    # retain the user turn as structured response_item content.
+                    if (-not $fallback -and $d.type -eq 'response_item' -and $d.payload.role -eq 'user') {
+                        $fallback = @($d.payload.content | Where-Object { $_.type -in @('input_text', 'text') } |
+                            ForEach-Object { $_.text } | Where-Object { $_ }) -join ' '
                     }
                     if ($cwd -and $fallback) { break }
                 }
