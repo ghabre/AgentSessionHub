@@ -34,7 +34,7 @@
 # folder picker among them. Alt-F on 2+ marked rows copies one combined formatted export.
 #
 # On startup it also snapshots the transcripts (~/.claude/projects, plus history.jsonl) to
-# a .tar.gz under .\backups\claude, but only if the newest snapshot is more than 5 hours old, and
+# a .tar.gz under .\backups\claude, but only if the newest snapshot is more than 24 hours old, and
 # it keeps the 10 most recent. They land on the Windows side on purpose: the originals only
 # exist inside the WSL VHD. Override the location with $env:CLAUDE_BACKUP_DIR.
 #
@@ -237,7 +237,7 @@ $comboSh = @"
 # background. Override the location with $env:CLAUDE_BACKUP_DIR.
 $backupDir    = if ($env:CLAUDE_BACKUP_DIR) { $env:CLAUDE_BACKUP_DIR } else { Join-Path $PSScriptRoot 'backups\claude' }
 $backupDirWsl = ConvertTo-WslPath $backupDir
-$backupEvery  = 5    # hours between snapshots
+$backupEvery  = 24   # hours between snapshots
 $backupKeep   = 10   # snapshots retained; older ones are pruned
 
 # backup.sh: throttle, snapshot, prune. All three decisions are driven by ONE source of
@@ -363,7 +363,19 @@ function Get-Sessions {
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
                     if (-not $fallback -and $line -match '"summary"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
-                    if (-not $fallback -and $line -match '"role"\s*:\s*"user".*?"content"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
+                    # Claude user content can be either a string or an array of text
+                    # blocks. Parse JSON for the fallback instead of assuming a string.
+                    if (-not $fallback -and $line -match '"type"\s*:\s*"user"') {
+                        try {
+                            $record = $line | ConvertFrom-Json
+                            $content = $record.message.content
+                            if ($content -is [string]) { $fallback = $content }
+                            else {
+                                $fallback = @($content | Where-Object { $_.type -eq 'text' } |
+                                    ForEach-Object { $_.text } | Where-Object { $_ }) -join ' '
+                            }
+                        } catch {}
+                    }
                     if (-not $transitionSource -and $line -match '\[Transitioned from Codex; inherited title: (.*?)\]') {
                         $transitionSource = 'Codex'; $transitionTitle = $Matches[1]
                     }
