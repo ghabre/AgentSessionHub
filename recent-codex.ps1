@@ -78,6 +78,7 @@ $indexFile = "$codex\session_index.jsonl"
 # Locate wt.exe (may not be on PATH depending on launch context)
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
 if ($wt) { $wt = $wt.Source } else { $wt = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe" }
+$wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW } else { '0' }
 
 # Use the LINUX fzf inside WSL, not fzf.exe: the Windows build mis-parses Windows
 # Terminal mouse sequences (wheel scrolls arrive as left-clicks), which made scrolling
@@ -311,7 +312,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-codex-cache.json'
+$cacheFile = Join-Path $env:TEMP 'recent-codex-cache-v2.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -383,14 +384,14 @@ function Get-Sessions {
                 $transitionSource = $c.transitionSource; $transitionTitle = $c.transitionTitle
             }
             $title = if ($transitionTitle) { $transitionTitle } else { $titles[$id] }
-            if (-not $title) { $title = if ($fallback) { $fallback } else { '(no title)' } }
+            $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
+            if (-not $title) { $title = if ($fallback) { $fallback } else { "Untitled session in $folder" } }
             $title = $title -replace '\\"','"'
             $title = $title -replace '\\[nrt]',' ' -replace '\s+',' '
             $handoffTitle = $title
-            if ($transitionSource) { $title = "↪ ${transitionSource}: $title" }
+            if ($transitionSource) { $title = "From ${transitionSource}: $title" }
             if ($title.Length -gt 50) { $title = $title.Substring(0,50) }
 
-            $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
             $age    = Format-Age $lastWrite
             $shortId = ($id -split '-')[-1]
 
@@ -444,7 +445,7 @@ function Invoke-NewSession($tool) {
     $name = $cols[0]; $path = $cols[1]
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'codex') { $name } else { "${tool}: $name" }
-    & $wt -w 0 new-tab --title $title `
+    & $wt -w $wtWindow new-tab --title $title `
         wsl.exe -d $distro --cd $path -- bash -lic $tool
     Start-Sleep -Milliseconds 300
 }
@@ -599,7 +600,7 @@ function Invoke-Claude($id, $cwd, $transcript, $title) {
     Write-Host "`r                           `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "claude: $title" } else { "claude: $id" }
-    & $wt -w 0 new-tab --title $tabTitle `
+    & $wt -w $wtWindow new-tab --title $tabTitle `
         wsl.exe -d $distro --cd $cwd -- bash -lic "bash $claudeShWsl $handoff"
     Start-Sleep -Milliseconds 300
 }
@@ -882,7 +883,7 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    & $wt -w 0 new-tab --title ("{0}: combined x{1}" -f $tool, $items.Count) `
+    & $wt -w $wtWindow new-tab --title ("{0}: combined x{1}" -f $tool, $items.Count) `
         wsl.exe -d $distro --cd $cwd -- bash -lic "bash $comboShWsl $tool $handoff"
     Start-Sleep -Milliseconds 300
 }
@@ -972,7 +973,7 @@ while ($true) {
         $title = $parts[4]
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
         $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-        & $wt -w 0 new-tab --title $tabTitle `
+        & $wt -w $wtWindow new-tab --title $tabTitle `
             wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
     }
