@@ -332,27 +332,66 @@ function Get-TitleCandidate($text) {
     return $candidate
 }
 
-# Codex's dynamic terminal title reads thread_name from session_index.jsonl. Some newer
-# sessions are absent from that index even though their transcript has a usable title.
-# Backfill only missing names so the CLI can combine its activity animation with the same
-# conversation title shown by this picker; never overwrite a name managed by Codex itself.
-function Set-MissingCodexThreadTitle($id, $title) {
+# Give Codex's live thread store the same title shown by the picker. Current Codex reads
+# dynamic terminal titles from that store (not session_index.jsonl), so use its supported
+# app-server API rather than editing the SQLite database behind a running CLI.
+function Set-CodexThreadTitle($id, $title) {
     if (-not $id -or -not $title -or $title -like 'Untitled session in *') { return }
-    if (Test-Path $indexFile) {
-        foreach ($line in [System.IO.File]::ReadLines($indexFile)) {
-            if (-not $line.Trim()) { continue }
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = 'wsl.exe'
+    $startInfo.Arguments = "-d `"$distro`" -- bash -lic `"codex app-server`""
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { return }
+        $initialize = @{ id = 1; method = 'initialize'; params = @{
+            clientInfo = @{ name = 'agent-session-hub'; title = 'Agent Session Hub'; version = '1' }
+            capabilities = $null
+        } } | ConvertTo-Json -Compress -Depth 4
+        $rename = @{ id = 2; method = 'thread/name/set'; params = @{
+            threadId = $id; name = $title
+        } } | ConvertTo-Json -Compress -Depth 3
+        $process.StandardInput.WriteLine($initialize)
+        $process.StandardInput.Flush()
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        $initialized = $false
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $read = $process.StandardOutput.ReadLineAsync()
+            $waitMs = [Math]::Max(1, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if (-not $read.Wait($waitMs)) { break }
+            $line = $read.Result
+            if ($null -eq $line) { break }
             try {
-                $entry = $line | ConvertFrom-Json
-                if ($entry.id -eq $id -and $entry.thread_name) { return }
-            } catch {}
+                $response = $line | ConvertFrom-Json
+                if ($response.id -eq 1) {
+                    if ($response.error) { throw "Codex initialization failed: $($response.error.message)" }
+                    $process.StandardInput.WriteLine('{"method":"initialized"}')
+                    $process.StandardInput.WriteLine($rename)
+                    $process.StandardInput.Flush()
+                    $initialized = $true
+                    continue
+                }
+                if ($response.id -eq 2) {
+                    if ($response.error) { throw "Codex rejected the session title: $($response.error.message)" }
+                    return
+                }
+            } catch {
+                if ($_.Exception.Message -like 'Codex *failed*' -or $_.Exception.Message -like 'Codex rejected*') { throw }
+            }
         }
+        if (-not $initialized) { throw 'Timed out while initializing the Codex title service.' }
+        throw 'Timed out while setting the Codex session title.'
+    } catch {
+        Write-Host "Could not set Codex conversation title: $($_.Exception.Message)"
+        Start-Sleep -Milliseconds 900
+    } finally {
+        if (-not $process.HasExited) { $process.Kill() }
+        $process.Dispose()
     }
-    $entry = [ordered]@{
-        id = $id
-        thread_name = $title
-        updated_at = [DateTime]::UtcNow.ToString('o')
-    } | ConvertTo-Json -Compress
-    [System.IO.File]::AppendAllText($indexFile, $entry + "`n", (New-Object System.Text.UTF8Encoding($false)))
 }
 
 function Get-Sessions {
@@ -478,8 +517,7 @@ function Invoke-NewSession($tool) {
     $name = $cols[0]; $path = $cols[1]
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'codex') { $name } else { "${tool}: $name" }
-    $titleArgs = if ($tool -eq 'codex') { @('--title', $title, '--suppressApplicationTitle') } else { @('--title', $title) }
-    & $wt -w $wtWindow new-tab @titleArgs `
+    & $wt -w $wtWindow new-tab --title $title `
         wsl.exe -d $distro --cd $path -- bash -lic $tool
     Start-Sleep -Milliseconds 300
 }
@@ -917,9 +955,7 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    $combinedTitle = "{0}: combined x{1}" -f $tool, $items.Count
-    $titleArgs = if ($tool -eq 'codex') { @('--title', $combinedTitle, '--suppressApplicationTitle') } else { @('--title', $combinedTitle) }
-    & $wt -w $wtWindow new-tab @titleArgs `
+    & $wt -w $wtWindow new-tab --title ("{0}: combined x{1}" -f $tool, $items.Count) `
         wsl.exe -d $distro --cd $cwd -- bash -lic "bash $comboShWsl $tool $handoff"
     Start-Sleep -Milliseconds 300
 }
@@ -1009,8 +1045,8 @@ while ($true) {
         $title = $parts[4]
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
         $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-        Set-MissingCodexThreadTitle $id $title
-        & $wt -w $wtWindow new-tab --title $tabTitle --suppressApplicationTitle `
+        Set-CodexThreadTitle $id $title
+        & $wt -w $wtWindow new-tab --title $tabTitle `
             wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
     }
