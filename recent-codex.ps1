@@ -168,6 +168,29 @@ done |
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($scanShWin, $scanSh)
 
+# Current Codex stores user-assigned conversation names in state_*.sqlite. Read that
+# store read-only so explicit renames take precedence over the legacy JSONL index and
+# transcript-derived fallbacks. Keeping the query in a script file avoids cross-shell
+# quoting problems between Windows PowerShell, wsl.exe, and Python.
+$titleScanWin = Join-Path $tmpWin 'titles.py'; $titleScanWsl = "$tmpWsl/titles.py"
+$titleScan = @'
+import glob
+import os
+import sqlite3
+import sys
+
+databases = glob.glob(os.path.join(sys.argv[1], "state_*.sqlite"))
+if databases:
+    database = max(databases, key=os.path.getmtime)
+    connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+    for session_id, name in connection.execute(
+        "SELECT id, name FROM threads WHERE name IS NOT NULL AND trim(name) <> ''"
+    ):
+        clean_name = name.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        print(f"{session_id}\t{clean_name}")
+'@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($titleScanWin, $titleScan)
+
 # --- New-session support -----------------------------------------------------------
 # Root that the folder picker lists (immediate subfolders become new-session choices).
 # Override with $env:CODEX_NEW_ROOT (a Windows path). WSL path derived like $tmpWsl.
@@ -395,6 +418,20 @@ function Set-CodexThreadTitle($id, $title) {
 }
 
 function Get-Sessions {
+    # Explicit names in Codex's current live store are authoritative. Failure to read
+    # the store is non-fatal; older installs can still use the index/transcript paths.
+    $liveTitles = @{}
+    try {
+        wsl.exe -d $distro -- python3 $titleScanWsl "/home/$wslUser/.codex" |
+            ForEach-Object {
+                $nameParts = $_ -split "`t", 2
+                if ($nameParts.Count -eq 2) {
+                    $candidate = Get-TitleCandidate $nameParts[1]
+                    if ($candidate) { $liveTitles[$nameParts[0]] = $candidate }
+                }
+            }
+    } catch {}
+
     # sessionId -> title from Codex's index. Use the last entry if a title was updated.
     $titles = @{}
     if (Test-Path $indexFile) {
@@ -451,11 +488,12 @@ function Get-Sessions {
             }
             if (-not $cwd) { return }
 
-            # Title priority: Codex index > first user turn > placeholder.
+            # Title priority: current explicit name > legacy/derived names > placeholder.
             if ($c -and "$($c.mtime)" -eq $mtime) {
                 $transitionSource = $c.transitionSource; $transitionTitle = $c.transitionTitle
             }
-            $title = Get-TitleCandidate $(if ($transitionTitle) { $transitionTitle } else { $titles[$id] })
+            $hasLiveTitle = $liveTitles.ContainsKey($id)
+            $title = Get-TitleCandidate $(if ($hasLiveTitle) { $liveTitles[$id] } elseif ($transitionTitle) { $transitionTitle } else { $titles[$id] })
             $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
             if (-not $title) { $title = if ($fallback) { $fallback } else { "Untitled session in $folder" } }
             $title = $title -replace '\\"','"'
@@ -467,8 +505,9 @@ function Get-Sessions {
             $age    = Format-Age $lastWrite
             $shortId = ($id -split '-')[-1]
 
-            # display <TAB> id <TAB> cwd <TAB> transcript (only col 1 is shown; --with-nth=1)
-            "{0} - {1} - {2} ago [..-{3}]`t{4}`t{5}`t{6}`t{7}" -f $folder, $title, $age, $shortId, $id, $cwd, $winPath, $handoffTitle
+            # Only col 1 is shown. The final hidden flag prevents resume from replacing
+            # an explicit Codex rename with a transcript-derived fallback.
+            "{0} - {1} - {2} ago [..-{3}]`t{4}`t{5}`t{6}`t{7}`t{8}" -f $folder, $title, $age, $shortId, $id, $cwd, $winPath, $handoffTitle, ([int]$hasLiveTitle)
         }
 
     try { $cache | ConvertTo-Json -Depth 3 | Set-Content $cacheFile } catch {}
@@ -1043,9 +1082,10 @@ while ($true) {
         }
         if ($id -eq '__NEW__')  { Invoke-NewSession $tool; continue }   # top row: start fresh
         $title = $parts[4]
+        $hasLiveTitle = $parts[5] -eq '1'
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
         $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-        Set-CodexThreadTitle $id $title
+        if (-not $hasLiveTitle) { Set-CodexThreadTitle $id $title }
         & $wt -w $wtWindow new-tab --title $tabTitle `
             wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
