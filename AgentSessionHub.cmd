@@ -14,4 +14,5 @@ pause
 exit /b 1
 
 :launch
-"%terminal%" -w new new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1" ; new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"
+set "AGENT_SESSION_HUB_WINDOW=AgentSessionHub-%RANDOM%-%RANDOM%"
+"%terminal%" -w "%AGENT_SESSION_HUB_WINDOW%" new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1" ; new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"
