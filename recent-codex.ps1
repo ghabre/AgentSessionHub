@@ -312,7 +312,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-codex-cache-v2.json'
+$cacheFile = Join-Path $env:TEMP 'recent-codex-cache-v3.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -320,6 +320,16 @@ if (Test-Path $cacheFile) {
             $cache[$_.Name] = $_.Value
         }
     } catch {}
+}
+
+# Ignore host-injected context records when deriving a title from user messages.
+function Get-TitleCandidate($text) {
+    if (-not ($text -is [string])) { return $null }
+    $candidate = $text.Trim()
+    if (-not $candidate) { return $null }
+    if ($candidate -match '(?is)^<(environment_context|permissions|collaboration_mode|apps_instructions|plugins_instructions|local-command-[^>\s]+)\b') { return $null }
+    if ($candidate -match '(?is)^# AGENTS\.md instructions\b') { return $null }
+    return $candidate
 }
 
 function Get-Sessions {
@@ -361,7 +371,7 @@ function Get-Sessions {
                     try { $d = $line | ConvertFrom-Json } catch { continue }
                     if (-not $cwd -and $d.type -eq 'session_meta') { $cwd = $d.payload.cwd }
                     if (-not $fallback -and $d.type -eq 'event_msg' -and $d.payload.type -eq 'user_message') {
-                        $fallback = $d.payload.message
+                        $fallback = Get-TitleCandidate $d.payload.message
                         if ($fallback -match '^\[Transitioned from Claude; inherited title: (.*?)\]') {
                             $transitionSource = 'Claude'; $transitionTitle = $Matches[1]
                         }
@@ -369,8 +379,8 @@ function Get-Sessions {
                     # Newer Codex transcripts may omit event_msg for some sessions but
                     # retain the user turn as structured response_item content.
                     if (-not $fallback -and $d.type -eq 'response_item' -and $d.payload.role -eq 'user') {
-                        $fallback = @($d.payload.content | Where-Object { $_.type -in @('input_text', 'text') } |
-                            ForEach-Object { $_.text } | Where-Object { $_ }) -join ' '
+                        $fallback = Get-TitleCandidate (@($d.payload.content | Where-Object { $_.type -in @('input_text', 'text') } |
+                            ForEach-Object { $_.text } | Where-Object { $_ }) -join ' ')
                     }
                     if ($cwd -and $fallback) { break }
                 }
@@ -383,7 +393,7 @@ function Get-Sessions {
             if ($c -and "$($c.mtime)" -eq $mtime) {
                 $transitionSource = $c.transitionSource; $transitionTitle = $c.transitionTitle
             }
-            $title = if ($transitionTitle) { $transitionTitle } else { $titles[$id] }
+            $title = Get-TitleCandidate $(if ($transitionTitle) { $transitionTitle } else { $titles[$id] })
             $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
             if (-not $title) { $title = if ($fallback) { $fallback } else { "Untitled session in $folder" } }
             $title = $title -replace '\\"','"'

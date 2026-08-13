@@ -316,7 +316,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v2.json'
+$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v3.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -324,6 +324,16 @@ if (Test-Path $cacheFile) {
             $cache[$_.Name] = $_.Value
         }
     } catch {}
+}
+
+# Ignore host-injected context records when deriving a title from user messages.
+function Get-TitleCandidate($text) {
+    if (-not ($text -is [string])) { return $null }
+    $candidate = $text.Trim()
+    if (-not $candidate) { return $null }
+    if ($candidate -match '(?is)^<(environment_context|permissions|collaboration_mode|apps_instructions|plugins_instructions|local-command-[^>\s]+)\b') { return $null }
+    if ($candidate -match '(?is)^# AGENTS\.md instructions\b') { return $null }
+    return $candidate
 }
 
 function Get-Sessions {
@@ -370,10 +380,10 @@ function Get-Sessions {
                         try {
                             $record = $line | ConvertFrom-Json
                             $content = $record.message.content
-                            if ($content -is [string]) { $fallback = $content }
+                            if ($content -is [string]) { $fallback = Get-TitleCandidate $content }
                             else {
-                                $fallback = @($content | Where-Object { $_.type -eq 'text' } |
-                                    ForEach-Object { $_.text } | Where-Object { $_ }) -join ' '
+                                $fallback = Get-TitleCandidate (@($content | Where-Object { $_.type -eq 'text' } |
+                                    ForEach-Object { $_.text } | Where-Object { $_ }) -join ' ')
                             }
                         } catch {}
                     }
@@ -395,6 +405,7 @@ function Get-Sessions {
             }
             if (-not $title -and $transitionTitle) { $title = $transitionTitle }
             if (-not $title) { $title = $aiTitle }
+            $title = Get-TitleCandidate $title
             $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
             if (-not $title) { $title = if ($fallback) { $fallback } else { "Untitled session in $folder" } }
             $title = $title -replace '\\"','"'
