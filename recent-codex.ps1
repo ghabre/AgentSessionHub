@@ -332,6 +332,29 @@ function Get-TitleCandidate($text) {
     return $candidate
 }
 
+# Codex's dynamic terminal title reads thread_name from session_index.jsonl. Some newer
+# sessions are absent from that index even though their transcript has a usable title.
+# Backfill only missing names so the CLI can combine its activity animation with the same
+# conversation title shown by this picker; never overwrite a name managed by Codex itself.
+function Set-MissingCodexThreadTitle($id, $title) {
+    if (-not $id -or -not $title -or $title -like 'Untitled session in *') { return }
+    if (Test-Path $indexFile) {
+        foreach ($line in [System.IO.File]::ReadLines($indexFile)) {
+            if (-not $line.Trim()) { continue }
+            try {
+                $entry = $line | ConvertFrom-Json
+                if ($entry.id -eq $id -and $entry.thread_name) { return }
+            } catch {}
+        }
+    }
+    $entry = [ordered]@{
+        id = $id
+        thread_name = $title
+        updated_at = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Compress
+    [System.IO.File]::AppendAllText($indexFile, $entry + "`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Get-Sessions {
     # sessionId -> title from Codex's index. Use the last entry if a title was updated.
     $titles = @{}
@@ -983,6 +1006,7 @@ while ($true) {
         $title = $parts[4]
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
         $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
+        Set-MissingCodexThreadTitle $id $title
         & $wt -w $wtWindow new-tab --title $tabTitle `
             wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
