@@ -245,6 +245,9 @@ try:
         "threadId": sys.argv[1], "name": sys.argv[2],
     }})
     wait_for(2)
+    # The response can precede the durable update notification. Keep app-server alive
+    # long enough to commit the new name before terminating the helper process.
+    time.sleep(1)
 finally:
     process.terminate()
     try:
@@ -415,7 +418,25 @@ function Get-TitleCandidate($text) {
     if (-not $candidate) { return $null }
     if ($candidate -match '(?s)^<[^>\r\n]+>') { return $null }
     if ($candidate -match '(?is)^# AGENTS\.md instructions\b') { return $null }
+    # Repair the common UTF-8-as-Windows-1252 corruption produced by older picker
+    # versions (for example, "â€¢" -> "•" and "â€™" -> "’").
+    if ($candidate -match '[\u00E2\u00C3\u00C2].') {
+        try {
+            $candidate = [System.Text.Encoding]::UTF8.GetString(
+                [System.Text.Encoding]::GetEncoding(1252).GetBytes($candidate)
+            )
+        } catch {}
+    }
     return $candidate
+}
+
+function Get-SafeTabTitle($title) {
+    if (-not $title) { return $null }
+    # wt.exe treats semicolons as command separators. Never give it an unbounded
+    # transcript or a separator-bearing string as the --title argument.
+    $safeTitle = ($title -replace ';', ',').Trim()
+    if ($safeTitle.Length -gt 80) { $safeTitle = $safeTitle.Substring(0, 80).TrimEnd() }
+    return $safeTitle
 }
 
 # Give Codex's live thread store the same title shown by the picker. Current Codex reads
@@ -510,19 +531,21 @@ function Get-Sessions {
             $hasLiveTitle = $liveTitles.ContainsKey($id)
             $title = Get-TitleCandidate $(if ($hasLiveTitle) { $liveTitles[$id] } elseif ($transitionTitle) { $transitionTitle } else { $titles[$id] })
             $folder = (($cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
-            if (-not $title) { $title = if ($fallback) { $fallback } else { "Untitled session in $folder" } }
+            if (-not $title) { $title = Get-TitleCandidate $(if ($fallback) { $fallback } else { "Untitled session in $folder" }) }
             $title = $title -replace '\\"','"'
             $title = $title -replace '\\[nrt]',' ' -replace '\s+',' '
             $handoffTitle = $title
             if ($transitionSource) { $title = "From ${transitionSource}: $title" }
-            if ($title.Length -gt 50) { $title = $title.Substring(0,50) }
+            $tabTitle = Get-SafeTabTitle $title
+            $displayTitle = $tabTitle
+            if ($displayTitle.Length -gt 50) { $displayTitle = $displayTitle.Substring(0,50) }
 
             $age    = Format-Age $lastWrite
             $shortId = ($id -split '-')[-1]
 
             # Only col 1 is shown. The final hidden flag prevents resume from replacing
             # an explicit Codex rename with a transcript-derived fallback.
-            "{0} - {1} - {2} ago [..-{3}]`t{4}`t{5}`t{6}`t{7}`t{8}" -f $folder, $title, $age, $shortId, $id, $cwd, $winPath, $handoffTitle, ([int]$hasLiveTitle)
+            "{0} - {1} - {2} ago [..-{3}]`t{4}`t{5}`t{6}`t{7}`t{8}`t{9}" -f $folder, $displayTitle, $age, $shortId, $id, $cwd, $winPath, $handoffTitle, $tabTitle, ([int]$hasLiveTitle)
         }
 
     try { $cache | ConvertTo-Json -Depth 3 | Set-Content $cacheFile } catch {}
@@ -1097,10 +1120,11 @@ while ($true) {
         }
         if ($id -eq '__NEW__')  { Invoke-NewSession $tool; continue }   # top row: start fresh
         $title = $parts[4]
-        $hasLiveTitle = $parts[5] -eq '1'
+        $codexTitle = $parts[5]
+        $hasLiveTitle = $parts[6] -eq '1'
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
-        $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-        if (-not $hasLiveTitle) { Set-CodexThreadTitle $id $title }
+        $tabTitle = if ($codexTitle) { "codex: $codexTitle" } else { "codex: $id" }
+        if (-not $hasLiveTitle) { Set-CodexThreadTitle $id $codexTitle }
         & $wt -w $wtWindow new-tab --title $tabTitle `
             wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
