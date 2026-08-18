@@ -191,6 +191,69 @@ if databases:
 '@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($titleScanWin, $titleScan)
 
+# Perform the app-server handshake inside WSL. PowerShell's asynchronous reads from a
+# redirected wsl.exe pipe can time out even though app-server answers immediately; a
+# native Linux pipe keeps the protocol deterministic and bounded.
+$titleSetWin = Join-Path $tmpWin 'set-title.py'; $titleSetWsl = "$tmpWsl/set-title.py"
+$titleSet = @'
+import json
+import select
+import subprocess
+import sys
+import time
+
+process = subprocess.Popen(
+    ["bash", "-lic", "codex app-server"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+    bufsize=1,
+)
+
+def send(message):
+    process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+    process.stdin.flush()
+
+def wait_for(response_id, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([process.stdout], [], [], max(0, deadline - time.monotonic()))
+        if not ready:
+            break
+        line = process.stdout.readline()
+        if not line:
+            break
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if response.get("id") == response_id:
+            if response.get("error"):
+                raise RuntimeError(response["error"].get("message", "app-server request failed"))
+            return
+    raise TimeoutError(f"timed out waiting for app-server response {response_id}")
+
+try:
+    send({"id": 1, "method": "initialize", "params": {
+        "clientInfo": {"name": "agent-session-hub", "title": "Agent Session Hub", "version": "1"},
+        "capabilities": None,
+    }})
+    wait_for(1)
+    send({"method": "initialized"})
+    send({"id": 2, "method": "thread/name/set", "params": {
+        "threadId": sys.argv[1], "name": sys.argv[2],
+    }})
+    wait_for(2)
+finally:
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+'@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($titleSetWin, $titleSet)
+
 # --- New-session support -----------------------------------------------------------
 # Root that the folder picker lists (immediate subfolders become new-session choices).
 # Override with $env:CODEX_NEW_ROOT (a Windows path). WSL path derived like $tmpWsl.
@@ -360,60 +423,12 @@ function Get-TitleCandidate($text) {
 # app-server API rather than editing the SQLite database behind a running CLI.
 function Set-CodexThreadTitle($id, $title) {
     if (-not $id -or -not $title -or $title -like 'Untitled session in *') { return }
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = 'wsl.exe'
-    $startInfo.Arguments = "-d `"$distro`" -- bash -lic `"codex app-server`""
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardInput = $true
-    $startInfo.RedirectStandardOutput = $true
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
     try {
-        if (-not $process.Start()) { return }
-        $initialize = @{ id = 1; method = 'initialize'; params = @{
-            clientInfo = @{ name = 'agent-session-hub'; title = 'Agent Session Hub'; version = '1' }
-            capabilities = $null
-        } } | ConvertTo-Json -Compress -Depth 4
-        $rename = @{ id = 2; method = 'thread/name/set'; params = @{
-            threadId = $id; name = $title
-        } } | ConvertTo-Json -Compress -Depth 3
-        $process.StandardInput.WriteLine($initialize)
-        $process.StandardInput.Flush()
-        $deadline = [DateTime]::UtcNow.AddSeconds(5)
-        $initialized = $false
-        while ([DateTime]::UtcNow -lt $deadline) {
-            $read = $process.StandardOutput.ReadLineAsync()
-            $waitMs = [Math]::Max(1, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds)
-            if (-not $read.Wait($waitMs)) { break }
-            $line = $read.Result
-            if ($null -eq $line) { break }
-            try {
-                $response = $line | ConvertFrom-Json
-                if ($response.id -eq 1) {
-                    if ($response.error) { throw "Codex initialization failed: $($response.error.message)" }
-                    $process.StandardInput.WriteLine('{"method":"initialized"}')
-                    $process.StandardInput.WriteLine($rename)
-                    $process.StandardInput.Flush()
-                    $initialized = $true
-                    continue
-                }
-                if ($response.id -eq 2) {
-                    if ($response.error) { throw "Codex rejected the session title: $($response.error.message)" }
-                    return
-                }
-            } catch {
-                if ($_.Exception.Message -like 'Codex *failed*' -or $_.Exception.Message -like 'Codex rejected*') { throw }
-            }
-        }
-        if (-not $initialized) { throw 'Timed out while initializing the Codex title service.' }
-        throw 'Timed out while setting the Codex session title.'
+        & wsl.exe -d $distro -- python3 $titleSetWsl $id $title
+        if ($LASTEXITCODE -ne 0) { throw "title helper exited with code $LASTEXITCODE" }
     } catch {
         Write-Host "Could not set Codex conversation title: $($_.Exception.Message)"
         Start-Sleep -Milliseconds 900
-    } finally {
-        if (-not $process.HasExited) { $process.Kill() }
-        $process.Dispose()
     }
 }
 
