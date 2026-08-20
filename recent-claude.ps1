@@ -164,6 +164,7 @@ find "/home/$wslUser/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*
 
 # --- New-session support -----------------------------------------------------------
 # Root that the folder picker lists (immediate subfolders become new-session choices).
+# Its first row can also create an initialized local Git project under this root.
 # Override with $env:CLAUDE_NEW_ROOT (a Windows path). WSL path derived like $tmpWsl.
 $newRoot    = if ($env:CLAUDE_NEW_ROOT) { $env:CLAUDE_NEW_ROOT } else { 'C:\G\code' }
 $newRootWsl = ConvertTo-WslPath $newRoot
@@ -456,8 +457,8 @@ function Update-List {
 # the picker and is the command the tab runs -- so both share this one function.
 function Invoke-NewSession($tool) {
     $dirs = wsl.exe -d $distro -- bash $scanDirShWsl
-    if (-not $dirs) { Write-Host "No folders found under $newRoot"; Start-Sleep -Milliseconds 800; return }
-    [System.IO.File]::WriteAllLines($dirListWin, [string[]]@($dirs))
+    $createRow = "+ Create new project folder...`t__CREATE__"
+    [System.IO.File]::WriteAllLines($dirListWin, [string[]](@($createRow) + @($dirs)))
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     wsl.exe -d $distro -- bash $fzfDirShWsl $dirListWsl $pickWsl $tool
     # @() must wrap the whole pipeline: Where-Object unwraps a single match back to a
@@ -467,6 +468,38 @@ function Invoke-NewSession($tool) {
     if (-not $p) { return }   # Esc in the folder picker: cancel, back to the session list
     $cols = $p[0] -split "`t"
     $name = $cols[0]; $path = $cols[1]
+    if ($path -eq '__CREATE__') {
+        $name = (Read-Host "New project folder name under $newRoot").Trim()
+        if (-not $name) { return }
+        $baseName = ($name -split '\.')[0]
+        if ($name -in @('.', '..') -or $name -match '[<>:"/\\|?*\x00-\x1F]' -or $name -match '[. ]$' -or
+            $baseName -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            Write-Host "Invalid folder name: $name"; Start-Sleep -Milliseconds 900; return
+        }
+        $newPathWin = Join-Path $newRoot $name
+        if (Test-Path $newPathWin) {
+            Write-Host "Folder already exists: $newPathWin"; Start-Sleep -Milliseconds 900; return
+        }
+        New-Item -ItemType Directory -Path $newPathWin | Out-Null
+        $path = ConvertTo-WslPath $newPathWin
+        $instructions = @'
+# Agent Instructions
+
+Keep `AGENTS.md` and `CLAUDE.md` synchronized whenever either instruction file changes.
+
+## Local Commit Policy
+
+After every completed repository change, automatically create a local Git commit with a concise, meaningful message describing the result. Do not wait for a separate request. Keep commits focused, verify the staged diff, and never push to an origin or other remote unless the user explicitly requests it.
+'@ -replace "`r`n","`n"
+        [System.IO.File]::WriteAllText((Join-Path $newPathWin 'AGENTS.md'), $instructions)
+        [System.IO.File]::WriteAllText((Join-Path $newPathWin 'CLAUDE.md'), $instructions)
+        & wsl.exe -d $distro -- git -C $path init --initial-branch=main
+        if ($LASTEXITCODE -ne 0) { Write-Host "Could not initialize Git in $newPathWin"; Start-Sleep -Milliseconds 900; return }
+        & wsl.exe -d $distro -- git -C $path add AGENTS.md CLAUDE.md
+        if ($LASTEXITCODE -ne 0) { Write-Host "Could not stage project instructions"; Start-Sleep -Milliseconds 900; return }
+        & wsl.exe -d $distro -- git -C $path commit -m "Initialize project instructions"
+        if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
+    }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
     & $wt -w $wtWindow new-tab --title $title `
