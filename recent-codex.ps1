@@ -506,17 +506,14 @@ function Get-Sessions {
                 foreach ($line in [System.IO.File]::ReadLines($winPath)) {
                     try { $d = $line | ConvertFrom-Json } catch { continue }
                     if (-not $cwd -and $d.type -eq 'session_meta') { $cwd = $d.payload.cwd }
-                    if (-not $fallback -and $d.type -eq 'event_msg' -and $d.payload.type -eq 'user_message') {
-                        $fallback = Get-TitleCandidate $d.payload.message
-                        if ($fallback -match '^\[Transitioned from Claude; inherited title: (.*?)\]') {
-                            $transitionSource = 'Claude'; $transitionTitle = $Matches[1]
+                    if (-not $fallback -and $d.type -eq 'response_item' -and $d.payload.type -eq 'message' -and $d.payload.role -eq 'user') {
+                        $text = Get-MessageText $d.payload
+                        if ($text -and -not (Test-InjectedUserText $text)) {
+                            $fallback = Get-TitleCandidate $text
+                            if ($fallback -match '^\[Transitioned from Claude; inherited title: (.*?)\]') {
+                                $transitionSource = 'Claude'; $transitionTitle = $Matches[1]
+                            }
                         }
-                    }
-                    # Newer Codex transcripts may omit event_msg for some sessions but
-                    # retain the user turn as structured response_item content.
-                    if (-not $fallback -and $d.type -eq 'response_item' -and $d.payload.role -eq 'user') {
-                        $fallback = Get-TitleCandidate (@($d.payload.content | Where-Object { $_.type -in @('input_text', 'text') } |
-                            ForEach-Object { $_.text } | Where-Object { $_ }) -join ' ')
                     }
                     if ($cwd -and $fallback) { break }
                 }
@@ -632,6 +629,20 @@ After every completed repository change, automatically create a local Git commit
     Start-Sleep -Milliseconds 300
 }
 
+# Text of a transcript record, whatever content shape Codex used: a plain string, or a
+# list of typed parts (`input_text`/`output_text`/`text`).
+function Get-MessageText($payload) {
+    $content = $(if ($null -ne $payload.content) { $payload.content } else { $payload.output })
+    if ($content -is [string]) { return $content.Trim() }
+    return ((@($content | ForEach-Object { $_.text } | Where-Object { $_ }) -join "`n").Trim())
+}
+
+# Codex injects AGENTS.md/instruction/context blocks as user turns; they are setup, not chat.
+function Test-InjectedUserText($text) {
+    return ($text -match '^\s*<(environment_context|user_instructions|skills_instructions|instructions)\b' -or
+            $text -match '^\s*#\s+\S+\.md instructions\b')
+}
+
 # Read a transcript as an ordered list of chat messages: @{ Role='User'|'Codex'; Body=... }.
 #
 # The ONE place that decides what "the chat" means -- both the Claude handoff and the
@@ -639,24 +650,28 @@ After every completed repository change, automatically create a local Git commit
 # apart on what counts as a message.
 #
 # What survives: user messages and Codex user-facing messages, in order. What's dropped,
-# deliberately: tool calls/outputs, reasoning, token counters, task state, and duplicated
-# response_item mirrors of event_msg records.
-# so what's left is the intent/decisions/dead-ends that only exist in the conversation.
+# deliberately: tool calls/outputs, reasoning, token counters, task state, and the context
+# blocks Codex injects as user turns -- so what's left is the intent/decisions/dead-ends
+# that only exist in the conversation.
+#
+# Read from `response_item` messages, not the `event_msg` chat events: those events were
+# renamed (`user_message`/`agent_message` -> `item_completed`) in newer Codex builds, while
+# response_item messages are the same shape in old and new transcripts.
 function Get-ChatMessages($transcript) {
     $msgs = New-Object System.Collections.ArrayList
     foreach ($line in [System.IO.File]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
-        if ($d.type -ne 'event_msg') { continue }
-        $p = $d.payload
-        if ($p.type -ne 'user_message' -and $p.type -ne 'agent_message') { continue }
+        if ($d.type -ne 'response_item' -or $d.payload.type -ne 'message') { continue }
+        $role = "$($d.payload.role)"
+        if ($role -ne 'user' -and $role -ne 'assistant') { continue }
 
-        $body = "$($p.message)".Trim()
-        $body = $body.Trim()
+        $body = Get-MessageText $d.payload
         if (-not $body) { continue }
+        if ($role -eq 'user' -and (Test-InjectedUserText $body)) { continue }
 
         [void]$msgs.Add([pscustomobject]@{
-            Role = $(if ($p.type -eq 'user_message') { 'User' } else { 'Codex' })
+            Role = $(if ($role -eq 'user') { 'User' } else { 'Codex' })
             Body = $body
         })
     }
@@ -674,13 +689,22 @@ function Get-HandoffStateMarkdown($transcript, $label) {
     foreach ($line in [System.IO.File]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
-        if ($d.type -eq 'event_msg') {
-            $p = $d.payload
-            if ($p.type -eq 'user_message' -and $p.message) { $lastUser = "$($p.message)" }
-            elseif ($p.type -eq 'agent_message' -and $p.message) { $lastAgent = "$($p.message)" }
+        if ($d.type -eq 'response_item' -and $d.payload.type -eq 'message') {
+            $text = Get-MessageText $d.payload
+            if ($text) {
+                if ($d.payload.role -eq 'user' -and -not (Test-InjectedUserText $text)) { $lastUser = $text }
+                elseif ($d.payload.role -eq 'assistant') { $lastAgent = $text }
+            }
         }
-        if ($d.type -eq 'response_item' -and $d.payload.type -eq 'function_call') {
-            $name = "$($d.payload.name)"; $args = "$($d.payload.arguments)"; $detail = $args
+        # Newer Codex builds report edits only as item_completed/FileChange events.
+        if ($d.type -eq 'event_msg' -and $d.payload.type -eq 'item_completed' -and $d.payload.item.type -eq 'FileChange') {
+            foreach ($f in $d.payload.item.changes.PSObject.Properties.Name) { [void]$files.Add($f) }
+        }
+        # Tool calls: `function_call`/`arguments` in older transcripts, `custom_tool_call`/`input` in newer.
+        if ($d.type -eq 'response_item' -and $d.payload.type -in @('function_call', 'custom_tool_call')) {
+            $name = "$($d.payload.name)"
+            $args = "$(if ($d.payload.arguments) { $d.payload.arguments } else { $d.payload.input })"
+            $detail = $args
             try {
                 $a = $args | ConvertFrom-Json
                 foreach ($k in @('cmd','command','path','file_path','workdir','query','pattern')) {
@@ -693,8 +717,8 @@ function Get-HandoffStateMarkdown($transcript, $label) {
             if ($detail.Length -gt 220) { $detail = $detail.Substring(0,220) + ' ...' }
             if ($calls.Count -lt 30) { [void]$calls.Add("${name}: $detail") }
         }
-        if ($d.type -eq 'response_item' -and $d.payload.type -eq 'function_call_output') {
-            $output = "$($d.payload.output)".Trim()
+        if ($d.type -eq 'response_item' -and $d.payload.type -in @('function_call_output', 'custom_tool_call_output')) {
+            $output = (Get-MessageText $d.payload).Trim()
             if (-not $output) { continue }
             $interesting = $output -match '(?im)\b(error|failed|exception|traceback|denied|not found|cannot|unable|exit code [1-9])\b'
             if ($interesting -and $snips.Count -lt 8) {
