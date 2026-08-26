@@ -1,7 +1,7 @@
 # recent-claude.ps1
 #
-# Fuzzy-picker for recent Claude Code sessions running inside WSL. Lists the 50 most
-# recent transcripts; pick one to open it, resumed, in a new Windows Terminal tab.
+# Fuzzy-picker for Claude Code sessions running inside WSL. Lists every locally available
+# transcript; pick one to open it, resumed, in a new Windows Terminal tab.
 # Picking takes two clicks: the first left-click on a row only highlights it, a second
 # click on that same row opens it (Enter opens the highlighted row straight away). This
 # is deliberately NOT fzf's own double-click, which demands two fast clicks with no mouse
@@ -152,13 +152,13 @@ $clickBinds
 # scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
 # slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
 # script file keeps them intact). Claude stores internal agents under subagents/, so
-# exclude that path before taking the newest 50. This mirrors the Codex metadata filter.
+# exclude that path. This mirrors the Codex metadata filter.
 # Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
 find "/home/$wslUser/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null |
-    sort -rn | head -50
+    sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($scanShWin, $scanSh)
 
@@ -349,7 +349,7 @@ function Get-Sessions {
         }
     }
 
-    # Gather the 50 most-recent top-level sessions (excluding subagent sidechains),
+    # Gather every locally available top-level session (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
     wsl.exe -d $distro -- bash $scanShWsl |
         ForEach-Object {

@@ -1,7 +1,7 @@
 # recent-codex.ps1
 #
-# Fuzzy-picker for recent Codex sessions running inside WSL. Lists the 50 most
-# recent transcripts; pick one to open it, resumed, in a new Windows Terminal tab.
+# Fuzzy-picker for Codex sessions running inside WSL. Lists every locally available
+# transcript; pick one to open it, resumed, in a new Windows Terminal tab.
 # Picking takes two clicks: the first left-click on a row only highlights it, a second
 # click on that same row opens it (Enter opens the highlighted row straight away). This
 # is deliberately NOT fzf's own double-click, which demands two fast clicks with no mouse
@@ -152,8 +152,8 @@ $clickBinds
 # scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
 # slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
 # script file keeps them intact). Approval reviewers and other internal agents are stored
-# beside real sessions, so reject session_meta records marked as subagents before taking
-# the newest 50. Otherwise their injected review prompt becomes a repeated fake title.
+# beside real sessions, so reject session_meta records marked as subagents. Otherwise
+# their injected review prompt becomes a repeated fake title.
 # Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
@@ -164,7 +164,7 @@ while IFS=`$'\t' read -r session_mtime session_path; do
         printf '%s\t%s\n' "`$session_mtime" "`$session_path"
     fi
 done |
-    sort -rn | head -50
+    sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($scanShWin, $scanSh)
 
@@ -481,7 +481,7 @@ function Get-Sessions {
         }
     }
 
-    # Gather the 50 most-recent top-level sessions (excluding subagent sidechains),
+    # Gather every locally available top-level session (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
     wsl.exe -d $distro -- bash $scanShWsl |
         ForEach-Object {
