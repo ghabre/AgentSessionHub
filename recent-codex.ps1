@@ -1,7 +1,7 @@
 # recent-codex.ps1
 #
-# Fuzzy-picker for Codex sessions running inside WSL. Lists every locally available
-# transcript; pick one to open it, resumed, in a new Windows Terminal tab.
+# Fuzzy-picker for Codex sessions running inside WSL. Lists top-level transcripts
+# updated within the last 40 days; pick one to resume in a new Windows Terminal tab.
 # Picking takes two clicks: the first left-click on a row only highlights it, a second
 # click on that same row opens it (Enter opens the highlighted row straight away). This
 # is deliberately NOT fzf's own double-click, which demands two fast clicks with no mouse
@@ -158,7 +158,7 @@ $clickBinds
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
-find "/home/$wslUser/.codex/sessions" -name '*.jsonl' -printf '%T@\t%p\n' 2>/dev/null |
+find "/home/$wslUser/.codex/sessions" -name '*.jsonl' -mtime -40 -printf '%T@\t%p\n' 2>/dev/null |
 while IFS=`$'\t' read -r session_mtime session_path; do
     if ! head -n 1 "`$session_path" | grep -q '"thread_source":"subagent"'; then
         printf '%s\t%s\n' "`$session_mtime" "`$session_path"
@@ -481,7 +481,7 @@ function Get-Sessions {
         }
     }
 
-    # Gather every locally available top-level session (excluding subagent sidechains),
+    # Gather top-level sessions updated within 40 days (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
     wsl.exe -d $distro -- bash $scanShWsl |
         ForEach-Object {
