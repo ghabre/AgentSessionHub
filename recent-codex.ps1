@@ -152,15 +152,15 @@ $clickBinds
 # scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
 # slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
 # script file keeps them intact). Approval reviewers and other internal agents are stored
-# beside real sessions, so reject session_meta records marked as subagents. Otherwise
-# their injected review prompt becomes a repeated fake title.
+# beside real sessions. Reject child metadata generically as well as both the older
+# "subagent" and newer "guardian_review" labels, so internal UUIDs never become rows.
 # Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
 find "/home/$wslUser/.codex/sessions" -name '*.jsonl' -mtime -40 -printf '%T@\t%p\n' 2>/dev/null |
 while IFS=`$'\t' read -r session_mtime session_path; do
-    if ! head -n 1 "`$session_path" | grep -q '"thread_source":"subagent"'; then
+    if ! head -n 1 "`$session_path" | grep -Eq '"parent_thread_id":|"source":\{"subagent":|"thread_source":"(subagent|guardian_review)"'; then
         printf '%s\t%s\n' "`$session_mtime" "`$session_path"
     fi
 done |
