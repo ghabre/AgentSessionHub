@@ -143,10 +143,10 @@ $fzfSh = @"
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
-    --expect=alt-c,alt-f,alt-r \
+    --expect=alt-c,alt-f,alt-h \
 $clickBinds
     --prompt='codex sessions> ' --reverse \
-    --header='enter: open | tab: mark | alt-c: claude | alt-f: copy | alt-r: hide | esc: reload' \
+    --header='enter: open | tab: mark | alt-c: claude | alt-f: copy | alt-h: hide | esc: reload' \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
@@ -1171,7 +1171,7 @@ while ($true) {
     wsl.exe -d $distro -- bash $fzfShWsl $listWsl $pickWsl
 
     # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f',
-    # or 'alt-r') and
+    # or 'alt-h') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
@@ -1180,7 +1180,7 @@ while ($true) {
     # Esc (or no match) -> empty pick: reload the full script so edits are picked up.
     if (-not $picked) { Restart-Script }
 
-    if ($key -eq 'alt-r') {
+    if ($key -eq 'alt-h') {
         Hide-Sessions $picked
         $sessions = Update-List
         continue
