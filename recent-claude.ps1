@@ -74,6 +74,8 @@ $wslUser  = if ($env:WSL_USER) { $env:WSL_USER } else { (wsl -d $distro -- whoam
 $claude   = "\\wsl$\$distro\home\$wslUser\.claude"
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
+$hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
+$hiddenSessionsFile = Join-Path $hubStateDir 'hidden-claude-session-ids.txt'
 
 # Locate wt.exe (may not be on PATH depending on launch context)
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
@@ -134,17 +136,17 @@ $clickBinds = @"
 
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
-# open in claude, hand the session off to codex, or copy it to the clipboard.
+# open in claude, hand the session off to codex, copy it, or hide it from this picker.
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
-    --expect=alt-c,alt-f \
+    --expect=alt-c,alt-f,alt-r \
 $clickBinds
     --prompt='claude sessions> ' --reverse \
-    --header='enter: open | tab: mark 2+ to combine | alt-c: codex | alt-f: copy | esc: reload' \
+    --header='enter: open | tab: mark | alt-c: codex | alt-f: copy | alt-r: hide | esc: reload' \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
@@ -337,7 +339,36 @@ function Get-TitleCandidate($text) {
     return $candidate
 }
 
+function Get-HiddenSessionIds {
+    $hidden = @{}
+    if (Test-Path $hiddenSessionsFile) {
+        try {
+            foreach ($line in [System.IO.File]::ReadLines($hiddenSessionsFile)) {
+                $id = $line.Trim()
+                if ($id -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+                    $hidden[$id.ToLowerInvariant()] = $true
+                }
+            }
+        } catch {}
+    }
+    return $hidden
+}
+
+function Hide-Sessions($rows) {
+    $hidden = Get-HiddenSessionIds
+    $ids = @(foreach ($row in $rows) {
+        $parts = $row -split "`t"
+        $id = $parts[1]
+        if ($id -and $id -ne '__NEW__' -and -not $hidden.ContainsKey($id.ToLowerInvariant())) { $id }
+    })
+    if (-not $ids) { return }
+    New-Item -ItemType Directory -Path $hubStateDir -Force | Out-Null
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::AppendAllText($hiddenSessionsFile, (($ids -join "`n") + "`n"), $utf8NoBom)
+}
+
 function Get-Sessions {
+    $hiddenIds = Get-HiddenSessionIds
     # sessionId -> {name, status} from sessions/*.json (live sessions: rename + status)
     $meta = @{}
     if (Test-Path $sessDir) {
@@ -357,6 +388,7 @@ function Get-Sessions {
             $winPath   = "\\wsl$\$distro" + ($linuxPath -replace '/','\')
             $lastWrite = [DateTimeOffset]::FromUnixTimeSeconds([long][double]$epoch).LocalDateTime
             $id = [System.IO.Path]::GetFileNameWithoutExtension($linuxPath)
+            if ($hiddenIds.ContainsKey($id.ToLowerInvariant())) { return }
 
             # One pass over the transcript: cwd + titles. Renames are stored in the
             # transcript itself as custom-title records (ai-title = auto title);
@@ -1010,7 +1042,8 @@ while ($true) {
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     wsl.exe -d $distro -- bash $fzfShWsl $listWsl $pickWsl
 
-    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f') and
+    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f',
+    # or 'alt-r') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
@@ -1018,6 +1051,12 @@ while ($true) {
     $picked = @($out | Select-Object -Skip 1 | Where-Object { $_ })
     # Esc (or no match) -> empty pick: reload the full script so edits are picked up.
     if (-not $picked) { Restart-Script }
+
+    if ($key -eq 'alt-r') {
+        Hide-Sessions $picked
+        $sessions = Update-List
+        continue
+    }
 
     # Open each pick as its own WSL tab in the correct folder, resumed.
     # bash -lic loads the login profile so PATH includes claude.

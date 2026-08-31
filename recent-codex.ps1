@@ -74,6 +74,8 @@ $wslUser  = if ($env:WSL_USER) { $env:WSL_USER } else { (wsl -d $distro -- whoam
 $codex   = "\\wsl$\$distro\home\$wslUser\.codex"
 $sessDir  = "$codex\sessions"
 $indexFile = "$codex\session_index.jsonl"
+$hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
+$hiddenSessionsFile = Join-Path $hubStateDir 'hidden-codex-session-ids.txt'
 
 # Locate wt.exe (may not be on PATH depending on launch context)
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
@@ -134,17 +136,17 @@ $clickBinds = @"
 
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
-# open in codex, hand the session off to claude, or copy it to the clipboard.
+# open in codex, hand the session off to claude, copy it, or hide it from this picker.
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
-    --expect=alt-c,alt-f \
+    --expect=alt-c,alt-f,alt-r \
 $clickBinds
     --prompt='codex sessions> ' --reverse \
-    --header='enter: open | tab: mark 2+ to combine | alt-c: claude | alt-f: copy | esc: reload' \
+    --header='enter: open | tab: mark | alt-c: claude | alt-f: copy | alt-r: hide | esc: reload' \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
@@ -454,7 +456,36 @@ function Set-CodexThreadTitle($id, $title) {
     }
 }
 
+function Get-HiddenSessionIds {
+    $hidden = @{}
+    if (Test-Path $hiddenSessionsFile) {
+        try {
+            foreach ($line in [System.IO.File]::ReadLines($hiddenSessionsFile)) {
+                $id = $line.Trim()
+                if ($id -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
+                    $hidden[$id.ToLowerInvariant()] = $true
+                }
+            }
+        } catch {}
+    }
+    return $hidden
+}
+
+function Hide-Sessions($rows) {
+    $hidden = Get-HiddenSessionIds
+    $ids = @(foreach ($row in $rows) {
+        $parts = $row -split "`t"
+        $id = $parts[1]
+        if ($id -and $id -ne '__NEW__' -and -not $hidden.ContainsKey($id.ToLowerInvariant())) { $id }
+    })
+    if (-not $ids) { return }
+    New-Item -ItemType Directory -Path $hubStateDir -Force | Out-Null
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::AppendAllText($hiddenSessionsFile, (($ids -join "`n") + "`n"), $utf8NoBom)
+}
+
 function Get-Sessions {
+    $hiddenIds = Get-HiddenSessionIds
     # Explicit names in Codex's current live store are authoritative. Failure to read
     # the store is non-fatal; older installs can still use the index/transcript paths.
     $liveTitles = @{}
@@ -494,6 +525,7 @@ function Get-Sessions {
             } else {
                 $base
             }
+            if ($hiddenIds.ContainsKey($id.ToLowerInvariant())) { return }
 
             # One pass over the transcript: cwd + fallback title from the first user turn.
             # Skipped entirely when the cached entry's mtime still matches.
@@ -1138,7 +1170,8 @@ while ($true) {
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     wsl.exe -d $distro -- bash $fzfShWsl $listWsl $pickWsl
 
-    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f') and
+    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f',
+    # or 'alt-r') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
@@ -1146,6 +1179,12 @@ while ($true) {
     $picked = @($out | Select-Object -Skip 1 | Where-Object { $_ })
     # Esc (or no match) -> empty pick: reload the full script so edits are picked up.
     if (-not $picked) { Restart-Script }
+
+    if ($key -eq 'alt-r') {
+        Hide-Sessions $picked
+        $sessions = Update-List
+        continue
+    }
 
     # Open each pick as its own WSL tab in the correct folder, resumed.
     # bash -lic loads the login profile so PATH includes codex.
