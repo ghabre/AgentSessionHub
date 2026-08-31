@@ -113,6 +113,9 @@ $tmpWsl  = ConvertTo-WslPath $tmpWin
 $listWin = Join-Path $tmpWin 'list.txt';  $listWsl = "$tmpWsl/list.txt"
 $pickWin = Join-Path $tmpWin 'pick.txt';  $pickWsl = "$tmpWsl/pick.txt"
 $fzfShWin = Join-Path $tmpWin 'fzf.sh';   $fzfShWsl = "$tmpWsl/fzf.sh"
+$showListWin = Join-Path $tmpWin 'show-list.txt'; $showListWsl = "$tmpWsl/show-list.txt"
+$showPickWin = Join-Path $tmpWin 'show-pick.txt'; $showPickWsl = "$tmpWsl/show-pick.txt"
+$showShWin = Join-Path $tmpWin 'show.sh'; $showShWsl = "$tmpWsl/show.sh"
 # Click-to-highlight, click-again-to-open -- shared by both pickers below.
 #
 # Single source of truth for "which row is highlighted": fzf's own focus. The focus event
@@ -143,13 +146,25 @@ $fzfSh = @"
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
-    --expect=alt-c,alt-f,alt-h \
+    --expect=alt-c,alt-f,alt-h,alt-s \
 $clickBinds
     --prompt='claude sessions> ' --reverse \
-    --header='enter: open | tab: mark | alt-c: codex | alt-f: copy | alt-h: hide | esc: reload' \
+    --header='enter: open | tab: mark | alt-c: codex | alt-f: copy | alt-h: hide | alt-s: show | esc: reload' \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
+
+$showSh = @"
+#!/bin/bash
+tr -d '\r' < "`$1" | "$fzfPath" \
+    --with-nth=1 --delimiter=`$'\t' \
+    --multi \
+$clickBinds
+    --prompt='hidden claude sessions> ' --reverse \
+    --header='enter: show | tab: mark multiple | esc: cancel' \
+    > "`$2"
+"@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($showShWin, $showSh)
 
 # scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
 # slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
@@ -159,8 +174,12 @@ $clickBinds
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
-find "/home/$wslUser/.claude/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null |
-    sort -rn
+if [ "`$1" = all ]; then
+    find "/home/$wslUser/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+else
+    find "/home/$wslUser/.claude/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+fi |
+sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($scanShWin, $scanSh)
 
@@ -367,8 +386,35 @@ function Hide-Sessions($rows) {
     [System.IO.File]::AppendAllText($hiddenSessionsFile, (($ids -join "`n") + "`n"), $utf8NoBom)
 }
 
-function Get-Sessions {
+function Show-HiddenSessions {
+    $rows = @(Get-Sessions 'hidden')
+    if (-not $rows) {
+        Write-Host "No hidden Claude conversations found."
+        Start-Sleep -Milliseconds 900
+        return
+    }
+    [System.IO.File]::WriteAllLines($showListWin, [string[]]$rows)
+    Remove-Item $showPickWin -ErrorAction SilentlyContinue
+    wsl.exe -d $distro -- bash $showShWsl $showListWsl $showPickWsl
+    $picked = @(if (Test-Path $showPickWin) { Get-Content $showPickWin | Where-Object { $_ } })
+    if (-not $picked) { return }
+    $selected = @{}
+    foreach ($row in $picked) {
+        $id = ($row -split "`t")[1]
+        if ($id) { $selected[$id.ToLowerInvariant()] = $true }
+    }
+    if (-not (Test-Path $hiddenSessionsFile)) { return }
+    $remaining = @(foreach ($line in [System.IO.File]::ReadLines($hiddenSessionsFile)) {
+        $id = $line.Trim()
+        if (-not $id -or -not $selected.ContainsKey($id.ToLowerInvariant())) { $line }
+    })
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($hiddenSessionsFile, [string[]]$remaining, $utf8NoBom)
+}
+
+function Get-Sessions($visibility = 'visible') {
     $hiddenIds = Get-HiddenSessionIds
+    $emittedIds = @{}
     # sessionId -> {name, status} from sessions/*.json (live sessions: rename + status)
     $meta = @{}
     if (Test-Path $sessDir) {
@@ -382,13 +428,18 @@ function Get-Sessions {
 
     # Gather top-level sessions updated within 40 days (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
-    wsl.exe -d $distro -- bash $scanShWsl |
+    $scanMode = if ($visibility -eq 'hidden') { 'all' } else { 'recent' }
+    wsl.exe -d $distro -- bash $scanShWsl $scanMode |
         ForEach-Object {
             $epoch, $linuxPath = $_ -split "`t"
             $winPath   = "\\wsl$\$distro" + ($linuxPath -replace '/','\')
             $lastWrite = [DateTimeOffset]::FromUnixTimeSeconds([long][double]$epoch).LocalDateTime
             $id = [System.IO.Path]::GetFileNameWithoutExtension($linuxPath)
-            if ($hiddenIds.ContainsKey($id.ToLowerInvariant())) { return }
+            $normalizedId = $id.ToLowerInvariant()
+            $isHidden = $hiddenIds.ContainsKey($normalizedId)
+            if (($visibility -eq 'hidden') -ne $isHidden) { return }
+            if ($emittedIds.ContainsKey($normalizedId)) { return }
+            $emittedIds[$normalizedId] = $true
 
             # One pass over the transcript: cwd + titles. Renames are stored in the
             # transcript itself as custom-title records (ai-title = auto title);
@@ -1043,12 +1094,17 @@ while ($true) {
     wsl.exe -d $distro -- bash $fzfShWsl $listWsl $pickWsl
 
     # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f',
-    # or 'alt-h') and
+    # 'alt-h', or 'alt-s') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
     $key    = if ($out.Count) { $out[0].Trim() } else { '' }
     $picked = @($out | Select-Object -Skip 1 | Where-Object { $_ })
+    if ($key -eq 'alt-s') {
+        Show-HiddenSessions
+        $sessions = Update-List
+        continue
+    }
     # Esc (or no match) -> empty pick: reload the full script so edits are picked up.
     if (-not $picked) { Restart-Script }
 
