@@ -9,8 +9,8 @@
 # The picker stays up for more picks; Esc reloads this script in-place; close the window to quit.
 #
 # The top row ("+ New session...") starts a fresh conversation: it opens a folder picker
-# listing the immediate subfolders of a project root (default C:\G\code, override with
-# $env:CLAUDE_NEW_ROOT), and launches a new session (no resume) in the folder you pick --
+# listing the project root itself followed by its immediate subfolders (default C:\G\code,
+# override with $env:CLAUDE_NEW_ROOT), and launches a new session in the folder you pick --
 # `claude` on enter/click, or `codex` on Alt-C.
 #
 # Alt-C on a session row continues that conversation in CODEX instead, same folder: the
@@ -534,14 +534,16 @@ function Update-List {
     return $s
 }
 
-# Folder picker for a brand-new session: list subfolders of $newRoot, then open the
-# chosen one as a fresh session (no resume) in its own Windows Terminal tab.
+# Folder picker for a brand-new session: list $newRoot first, then its subfolders, and
+# open the chosen one as a fresh session (no resume) in its own Windows Terminal tab.
 # $tool ('claude' or 'codex') is the ONLY difference between the two flows -- it labels
 # the picker and is the command the tab runs -- so both share this one function.
 function Invoke-NewSession($tool) {
     $dirs = wsl.exe -d $distro -- bash $scanDirShWsl
+    $rootName = Split-Path ($newRoot.TrimEnd('\')) -Leaf
+    $rootRow = "$rootName/ (project root)`t$newRootWsl`t$rootName"
     $createRow = "+ Create new project folder...`t__CREATE__"
-    [System.IO.File]::WriteAllLines($dirListWin, [string[]](@($createRow) + @($dirs)))
+    [System.IO.File]::WriteAllLines($dirListWin, [string[]](@($rootRow, $createRow) + @($dirs)))
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     wsl.exe -d $distro -- bash $fzfDirShWsl $dirListWsl $pickWsl $tool
     # @() must wrap the whole pipeline: Where-Object unwraps a single match back to a
@@ -550,7 +552,8 @@ function Invoke-NewSession($tool) {
     $p = @(if (Test-Path $pickWin) { Get-Content $pickWin | Where-Object { $_ } })
     if (-not $p) { return }   # Esc in the folder picker: cancel, back to the session list
     $cols = $p[0] -split "`t"
-    $name = $cols[0]; $path = $cols[1]
+    $name = if ($cols.Count -gt 2 -and $cols[2]) { $cols[2] } else { $cols[0] }
+    $path = $cols[1]
     if ($path -eq '__CREATE__') {
         $name = (Read-Host "New project folder name under $newRoot").Trim()
         if (-not $name) { return }
