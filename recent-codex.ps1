@@ -1,8 +1,7 @@
 # recent-codex.ps1
 #
 # Fuzzy-picker for Codex sessions running inside WSL. Lists top-level transcripts
-# updated within the last 40 days; pick one to resume in a Herdr pane when Herdr is
-# installed in WSL, falling back to a new Windows Terminal tab otherwise.
+# updated within the last 40 days; pick one to resume in a new Windows Terminal tab.
 # Picking takes two clicks: the first left-click on a row only highlights it, a second
 # click on that same row opens it (Enter opens the highlighted row straight away). This
 # is deliberately NOT fzf's own double-click, which demands two fast clicks with no mouse
@@ -42,8 +41,7 @@
 # Requirements:
 #   - Windows with WSL2, and Codex installed INSIDE WSL (data under ~/.codex).
 #     (Codex run natively on Windows keeps data elsewhere and is not supported.)
-#   - Windows Terminal (wt.exe) -- fallback used when Herdr is unavailable.
-#   - Herdr in WSL (optional) -- preferred host for every newly opened agent session.
+#   - Windows Terminal (wt.exe) -- used to open the resumed sessions as tabs.
 #   - The Linux build of fzf installed in WSL (NOT fzf.exe -- the Windows build
 #     mis-parses Windows Terminal mouse input). apt: `sudo apt install fzf`, or grab a
 #     release binary into ~/.local/bin. It's found via the WSL login-shell PATH.
@@ -101,13 +99,6 @@ $fzfPath = (wsl.exe -d $distro -- bash -lic "command -v fzf 2>/dev/null" 2>$null
 if ($fzfPath) { $fzfPath = $fzfPath.Trim() }
 if (-not $fzfPath) { $fzfPath = "/home/$wslUser/.local/bin/fzf" }
 
-# Herdr is preferred for every agent launch. Resolve it from the WSL login shell so
-# installs under ~/.local/bin work just like fzf and the agent CLIs. The launcher below
-# creates a Herdr workspace/pane and submits a shell command there; any failure returns
-# false so the caller can preserve the existing wt.exe behavior.
-$herdrPath = (wsl.exe -d $distro -- bash -lic "command -v herdr 2>/dev/null" 2>$null | Select-Object -Last 1)
-if ($herdrPath) { $herdrPath = $herdrPath.Trim() }
-
 # C:\dir\sub -> /mnt/c/dir/sub. One definition for every Windows path this script hands to
 # WSL (temp dir, new-session root, backup dir) -- they all mean the same conversion.
 function ConvertTo-WslPath($winPath) {
@@ -125,60 +116,6 @@ $fzfShWin = Join-Path $tmpWin 'fzf.sh';   $fzfShWsl = "$tmpWsl/fzf.sh"
 $showListWin = Join-Path $tmpWin 'show-list.txt'; $showListWsl = "$tmpWsl/show-list.txt"
 $showPickWin = Join-Path $tmpWin 'show-pick.txt'; $showPickWsl = "$tmpWsl/show-pick.txt"
 $showShWin = Join-Path $tmpWin 'show.sh'; $showShWsl = "$tmpWsl/show.sh"
-$herdrShWin = Join-Path $tmpWin 'herdr-launch.sh'; $herdrShWsl = "$tmpWsl/herdr-launch.sh"
-$herdrSh = @'
-#!/bin/bash
-# $1 = Herdr executable, $2 = WSL cwd, $3 = workspace label, remaining args = command.
-set -u
-herdr="$1"
-cwd="$2"
-label="$3"
-shift 3
-
-# A standalone picker may be launched without the visible Herdr tab. Start the
-# background server on demand, then give it a short window to accept API requests.
-if ! "$herdr" status server >/dev/null 2>&1; then
-    nohup "$herdr" server >/tmp/agent-session-hub-herdr.log 2>&1 &
-    for _ in $(seq 1 30); do
-        "$herdr" status server >/dev/null 2>&1 && break
-        sleep 0.1
-    done
-fi
-
-json=$("$herdr" workspace create --cwd "$cwd" --label "$label" --focus 2>/dev/null) || exit 1
-pane=$(printf '%s\n' "$json" | sed -n 's/.*"pane_id"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' | head -n 1)
-[ -n "$pane" ] || exit 1
-
-command_line=''
-for arg in "$@"; do
-    printf -v quoted '%q' "$arg"
-    if [ -n "$command_line" ]; then command_line+=" "; fi
-    command_line+="$quoted"
-done
-
-# Match the existing fallback's bash -lic behavior so agent CLIs installed by the
-# user's login profile remain on PATH even when the Herdr server was started headless.
-printf -v login_command '%q' "$command_line"
-if "$herdr" pane run "$pane" "bash -lic $login_command"; then
-    exit 0
-fi
-"$herdr" pane close "$pane" >/dev/null 2>&1 || true
-exit 1
-'@
-[System.IO.File]::WriteAllText($herdrShWin, ($herdrSh -replace "`r`n", "`n"))
-
-# Launch an agent inside Herdr when available. The command is passed as separate
-# arguments to this WSL-local wrapper, which shell-quotes them before pane run; this
-# keeps WSL paths, handoff filenames, and conversation IDs safe across the boundary.
-function Invoke-HerdrLaunch($tool, $cwd, $label, [string[]]$commandArgs) {
-    if (-not $herdrPath) { return $false }
-    $null = & wsl.exe -d $distro -- bash $herdrShWsl $herdrPath $cwd $label @commandArgs 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Start-Sleep -Milliseconds 300
-        return $true
-    }
-    return $false
-}
 # Click-to-highlight, click-again-to-open -- shared by both pickers below.
 #
 # Single source of truth for "which row is highlighted": fzf's own focus. The focus event
@@ -375,8 +312,8 @@ $clickBinds
 
 # --- Claude handoff support --------------------------------------------------------
 # Alt-C on a row ports that Codex conversation to Claude in the same repo/folder.
-# The export is local-only from Codex's plaintext JSONL transcript, then the launcher runs
-# claude in Herdr (or a fallback terminal) with the handoff as the first prompt.
+# The export is local-only from Codex's plaintext JSONL transcript, then the tab launches
+# claude directly with the handoff as the first prompt.
 #
 # Handoffs live in the WSL-local /tmp (reachable from Windows via \\wsl$): claude reads it
 # from inside WSL, and keeping it out of the repo means no stray file to commit.
@@ -392,7 +329,7 @@ $claudeSh = @"
 #!/bin/bash
 # `$1 = handoff markdown path. Starts claude with the handoff as its opening prompt.
 transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
-exec claude "[Transitioned from Codex; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
+claude "[Transitioned from Codex; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($claudeShWin, $claudeSh)
 
@@ -404,7 +341,7 @@ $comboShWin = Join-Path $tmpWin 'combo.sh'; $comboShWsl = "$tmpWsl/combo.sh"
 $comboSh = @"
 #!/bin/bash
 # `$1 = tool (codex|claude), `$2 = combined handoff markdown path.
-exec "`$1" "Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
+"`$1" "Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($comboShWin, $comboSh)
 # -----------------------------------------------------------------------------------
@@ -720,8 +657,7 @@ function Update-List {
 }
 
 # Folder picker for a brand-new session: list $newRoot first, then its subfolders, and
-# open the chosen one as a fresh session (no resume) in a Herdr pane, or a Windows
-# Terminal tab when Herdr is unavailable.
+# open the chosen one as a fresh session (no resume) in its own Windows Terminal tab.
 # $tool ('codex' or 'claude') is the ONLY difference between the two flows -- it labels
 # the picker and is the command the tab runs -- so both share this one function.
 function Invoke-NewSession($tool) {
@@ -774,10 +710,8 @@ After every completed repository change, automatically create a local Git commit
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'codex') { $name } else { "${tool}: $name" }
-    if (-not (Invoke-HerdrLaunch $tool $path $title @($tool))) {
-        & $wt -w $wtWindow new-tab --title $title `
-            wsl.exe -d $distro --cd $path -- bash -lic $tool
-    }
+    & $wt -w $wtWindow new-tab --title $title `
+        wsl.exe -d $distro --cd $path -- bash -lic $tool
     Start-Sleep -Milliseconds 300
 }
 
@@ -958,10 +892,8 @@ function Invoke-Claude($id, $cwd, $transcript, $title) {
     Write-Host "`r                           `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "claude: $title" } else { "claude: $id" }
-    if (-not (Invoke-HerdrLaunch 'claude' $cwd $tabTitle @('bash', $claudeShWsl, $handoff))) {
-        & $wt -w $wtWindow new-tab --title $tabTitle `
-            wsl.exe -d $distro --cd $cwd -- bash -lic "bash $claudeShWsl $handoff"
-    }
+    & $wt -w $wtWindow new-tab --title $tabTitle `
+        wsl.exe -d $distro --cd $cwd -- bash -lic "bash $claudeShWsl $handoff"
     Start-Sleep -Milliseconds 300
 }
 
@@ -1243,11 +1175,8 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    $tabTitle = ("{0}: combined x{1}" -f $tool, $items.Count)
-    if (-not (Invoke-HerdrLaunch $tool $cwd $tabTitle @('bash', $comboShWsl, $tool, $handoff))) {
-        & $wt -w $wtWindow new-tab --title $tabTitle `
-            wsl.exe -d $distro --cd $cwd -- bash -lic "bash $comboShWsl $tool $handoff"
-    }
+    & $wt -w $wtWindow new-tab --title ("{0}: combined x{1}" -f $tool, $items.Count) `
+        wsl.exe -d $distro --cd $cwd -- bash -lic "bash $comboShWsl $tool $handoff"
     Start-Sleep -Milliseconds 300
 }
 
@@ -1316,8 +1245,7 @@ while ($true) {
         continue
     }
 
-    # Open each pick in its own Herdr workspace/pane in the correct folder, or a WSL tab
-    # when Herdr is unavailable.
+    # Open each pick as its own WSL tab in the correct folder, resumed.
     # bash -lic loads the login profile so PATH includes codex.
     # For the two keys that launch something, the pressed key chooses the tool once, here;
     # everything below just uses $tool. (Alt-F launches nothing and ignores it.)
@@ -1352,10 +1280,8 @@ while ($true) {
         if ($tool -eq 'claude') { Invoke-Claude $id $cwd $tr $title; continue } # port to claude
         $tabTitle = if ($codexTitle) { "codex: $codexTitle" } else { "codex: $id" }
         if (-not $hasLiveTitle) { Set-CodexThreadTitle $id $codexTitle }
-        if (-not (Invoke-HerdrLaunch 'codex' $cwd $tabTitle @('codex', 'resume', $id))) {
-            & $wt -w $wtWindow new-tab --title $tabTitle `
-                wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
-        }
+        & $wt -w $wtWindow new-tab --title $tabTitle `
+            wsl.exe -d $distro --cd $cwd -- bash -lic "codex resume $id"
         Start-Sleep -Milliseconds 300   # let wt register each tab before the next
     }
 }
