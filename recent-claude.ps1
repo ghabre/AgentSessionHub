@@ -235,7 +235,7 @@ $codexSh = @"
 #!/bin/bash
 # `$1 = handoff markdown path. Starts codex with the handoff as its opening prompt.
 transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
-codex "[Transitioned from Claude; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
+codex -c tui.fullscreen_transcript=false "[Transitioned from Claude; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($codexShWin, $codexSh)
 
@@ -247,7 +247,12 @@ $comboShWin = Join-Path $tmpWin 'combo.sh'; $comboShWsl = "$tmpWsl/combo.sh"
 $comboSh = @"
 #!/bin/bash
 # `$1 = tool (claude|codex), `$2 = combined handoff markdown path.
-"`$1" "Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
+prompt="Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
+if [ "`$1" = codex ]; then
+    codex -c tui.fullscreen_transcript=false "`$prompt"
+else
+    claude "`$prompt"
+fi
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($comboShWin, $comboSh)
 # -----------------------------------------------------------------------------------
@@ -589,7 +594,7 @@ After every completed repository change, automatically create a local Git commit
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
     & $wt -w $wtWindow new-tab --title $title `
-        wsl.exe -d $distro --cd $path -- bash -lic $tool
+        wsl.exe -d $distro --cd $path -- bash -lic $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
     Start-Sleep -Milliseconds 300
 }
 
