@@ -82,6 +82,14 @@ $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
 if ($wt) { $wt = $wt.Source } else { $wt = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe" }
 $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW } else { '0' }
 
+# wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
+# "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
+function Open-WtTab($title, $cwd, $command) {
+    & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') `
+        wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
+    Start-Sleep -Milliseconds 300   # let wt register each tab before the next
+}
+
 # Use the LINUX fzf inside WSL, not fzf.exe: the Windows build mis-parses Windows
 # Terminal mouse sequences (wheel scrolls arrive as left-clicks), which made scrolling
 # open sessions. The Linux build parses mouse input correctly, so the wheel scrolls
@@ -593,9 +601,7 @@ After every completed repository change, automatically create a local Git commit
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
-    & $wt -w $wtWindow new-tab --title $title `
-        wsl.exe -d $distro --cd $path -- bash -lic $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
-    Start-Sleep -Milliseconds 300
+    Open-WtTab $title $path $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
 }
 
 # Read a transcript as an ordered list of chat messages: @{ Role='User'|'Claude'; Body=... }.
@@ -769,9 +775,7 @@ function Invoke-Codex($id, $cwd, $transcript, $title) {
     Write-Host "`r                           `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-    & $wt -w $wtWindow new-tab --title $tabTitle `
-        wsl.exe -d $distro --cd $cwd -- bash -lic "bash $codexShWsl $handoff"
-    Start-Sleep -Milliseconds 300
+    Open-WtTab $tabTitle $cwd "bash $codexShWsl $handoff"
 }
 
 # --- Alt-F: formatted chat export to the clipboard ---------------------------------
@@ -1052,9 +1056,7 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    & $wt -w $wtWindow new-tab --title ("{0}: combined x{1}" -f $tool, $items.Count) `
-        wsl.exe -d $distro --cd $cwd -- bash -lic "bash $comboShWsl $tool $handoff"
-    Start-Sleep -Milliseconds 300
+    Open-WtTab ("{0}: combined x{1}" -f $tool, $items.Count) $cwd "bash $comboShWsl $tool $handoff"
 }
 
 # alt-f on 2+ marked rows: one combined formatted copy to the clipboard (opens nothing).
@@ -1154,8 +1156,6 @@ while ($true) {
         $title = $parts[4]
         if ($tool -eq 'codex')  { Invoke-Codex $id $cwd $tr $title; continue }  # resume in codex
         $tabTitle = if ($title) { "claude: $title" } else { "claude: $id" }
-        & $wt -w $wtWindow new-tab --title $tabTitle `
-            wsl.exe -d $distro --cd $cwd -- bash -lic "claude --resume $id"
-        Start-Sleep -Milliseconds 300   # let wt register each tab before the next
+        Open-WtTab $tabTitle $cwd "claude --resume $id"
     }
 }
