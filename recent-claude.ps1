@@ -21,8 +21,8 @@
 # the conversation to codex sessions (in either direction), Alt-C first offers to resume
 # the newest of them with only the messages since its last handoff, or to start a new one.
 #
-# A Claude session sent to the background continues under a new id; the transcript it
-# left behind is not listed, only the live continuation.
+# A Claude session sent to the background continues under a new id; once the continuation
+# has a transcript, the one it left behind is not listed.
 #
 # Alt-F on a session row copies that conversation to the clipboard, formatted: the same
 # chat-only export, rendered to HTML (monospace, colour-coded speaker labels) and put on
@@ -401,7 +401,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v5.json'
+$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v6.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -511,16 +511,16 @@ function Get-Sessions($visibility = 'visible') {
             $mtime = $epoch
             $c = $cache[$winPath]
             if ($c -and "$($c.mtime)" -eq $mtime) {
-                $cwd = $c.cwd; $fallback = $c.fallback; $continued = $c.continued
+                $cwd = $c.cwd; $fallback = $c.fallback; $continuedIn = $c.continuedIn
                 $customTitle = $c.customTitle; $aiTitle = $c.aiTitle
             } else {
-                $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continued = $false
+                $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continuedIn = $null
                 $transitionSource = $null; $transitionTitle = $null
                 foreach ($line in [System.IO.File]::ReadLines($winPath)) {
                     if (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
-                    elseif ($line.StartsWith('{"type":"continued-in"')) { $continued = $true }
+                    elseif ($line -match '^\{"type":"continued-in".*"continuedInSessionId":"([^"]+)"') { $continuedIn = $Matches[1] }
                     if (-not $fallback -and $line -match '"summary"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
                     # Claude user content can be either a string or an array of text
                     # blocks. Parse JSON for the fallback instead of assuming a string.
@@ -539,11 +539,12 @@ function Get-Sessions($visibility = 'visible') {
                         $transitionSource = 'Codex'; $transitionTitle = $Matches[1]
                     }
                 }
-                $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback; continued = $continued
+                $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback; continuedIn = $continuedIn
                                       customTitle = $customTitle; aiTitle = $aiTitle
                                       transitionSource = $transitionSource; transitionTitle = $transitionTitle }
             }
-            if (-not $cwd -or $continued) { return }
+            # A backgrounded job can record a continuation that never writes a transcript.
+            if (-not $cwd -or ($continuedIn -and (Test-Path (Join-Path (Split-Path $winPath) "$continuedIn.jsonl")))) { return }
 
             # Title priority: live rename (sessions/) > rename in transcript > auto title > deduced
             $title = Get-RealName $meta $id
