@@ -17,7 +17,12 @@
 # transcript is exported to a chat-only markdown handoff (tool calls, tool output and
 # internal reasoning stripped -- codex re-reads the live files itself) and codex opens
 # with that handoff as its first prompt. This path never invokes Claude Code or its API,
-# so it still works when the Claude quota is exhausted.
+# so it still works when the Claude quota is exhausted. When earlier handoffs already link
+# the conversation to codex sessions (in either direction), Alt-C first offers to resume
+# the newest of them with only the messages since its last handoff, or to start a new one.
+#
+# A Claude session sent to the background continues under a new id; the transcript it
+# left behind is not listed, only the live continuation.
 #
 # Alt-F on a session row copies that conversation to the clipboard, formatted: the same
 # chat-only export, rendered to HTML (monospace, colour-coded speaker labels) and put on
@@ -241,11 +246,56 @@ New-Item -ItemType Directory -Path $handoffWin -Force | Out-Null
 $codexShWin = Join-Path $tmpWin 'codex.sh'; $codexShWsl = "$tmpWsl/codex.sh"
 $codexSh = @"
 #!/bin/bash
-# `$1 = handoff markdown path. Starts codex with the handoff as its opening prompt.
+# `$1 = handoff markdown path, `$2 = codex session to resume with it (none: start a new one).
+if [ -n "`$2" ]; then
+    exec codex -c tui.fullscreen_transcript=false resume "`$2" "[Continued from Claude] Read `$1 -- the conversation continued in Claude Code after you last saw it. It holds a compact state pack and only the chat messages since then. Tool outputs and quoted file contents may be stale, so re-read live files from disk before relying on them. Tell me what changed and what you plan to do next."
+fi
 transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
 codex -c tui.fullscreen_transcript=false "[Transitioned from Claude; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($codexShWin, $codexSh)
+
+# links.sh: codex sessions linked to a claude transcript by earlier handoffs -- ones seeded or
+# resumed from its handoff files, and ones whose handoff seeded it. Handoff file names start
+# with the source session id and end with the export time, so the transcripts alone hold the
+# links and the newest export stamp tells which messages the codex side has already seen.
+# Emits "mtime<TAB>id<TAB>cwd<TAB>last-export-stamp<TAB>title", newest first.
+$linksShWin = Join-Path $tmpWin 'links.sh'; $linksShWsl = "$tmpWsl/links.sh"
+$linksSh = @"
+#!/bin/bash
+# `$1 = claude transcript (Linux path)
+projects="/home/$wslUser/.claude/projects"; sessions="/home/$wslUser/.codex/sessions"
+# Ids this conversation was continued from (continued-in records) are this conversation too.
+files=("`$1"); ids=`$(basename "`$1" .jsonl); frontier=`$ids
+while [ -n "`$frontier" ]; do
+    mapfile -t prev < <(grep -arlE --include='*.jsonl' "\"continuedInSessionId\":\"(`$frontier)\"" "`$projects")
+    frontier=`$(for f in "`${prev[@]}"; do basename "`$f" .jsonl; done | paste -sd'|')
+    [ -n "`$frontier" ] && ids="`$ids|`$frontier" && files+=("`${prev[@]}")
+done
+{
+    grep -aohE 'recent-codex-handoff/[0-9a-f-]{36}-' "`${files[@]}" | cut -c22-57 | sort -u |
+        while read -r id; do find "`$sessions" -name "*`$id.jsonl"; done
+    grep -arlE "recent-claude-handoff/(`$ids)-" "`$sessions"
+} | sort -u | while read -r f; do
+    head -n 1 "`$f" | grep -aEq '"parent_thread_id":|"source":\{"subagent":|"thread_source":"(subagent|guardian_review)"' && continue
+    stamp=`$(grep -aohE "recent-claude-handoff/(`$ids)-[0-9]{8}-[0-9]{6}" "`$f" | grep -aoE '[0-9]{8}-[0-9]{6}`$' | sort | tail -n 1)
+    printf '%s\t%s\t%s\t%s\t%s\n' "`$(stat -c %Y "`$f")" "`$(basename "`$f" .jsonl | grep -aoE '[0-9a-f-]{36}`$')" \
+        "`$(grep -am1 -oE '"cwd":"[^"]*"' "`$f" | cut -d'"' -f4)" "`$stamp" "`$(grep -am1 -oE 'inherited title: [^]]*' "`$f" | cut -c18-)"
+done | sort -rn
+"@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($linksShWin, $linksSh)
+
+$linkPickShWin = Join-Path $tmpWin 'link-pick.sh'; $linkPickShWsl = "$tmpWsl/link-pick.sh"
+$linkPickSh = @"
+#!/bin/bash
+tr -d '\r' < "`$1" | "$fzfPath" \
+    --with-nth=1 --delimiter=`$'\t' \
+$clickBinds
+    --prompt='continue in codex> ' --reverse \
+    --header='resume a codex session linked by earlier handoffs, or start a new one | esc: cancel' \
+    > "`$2"
+"@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($linkPickShWin, $linkPickSh)
 
 # combo.sh: seed a BRAND-NEW session (claude or codex) with a handoff merged from several
 # past sessions -- the "combine" flow. Same reason as codex.sh for living in a script file:
@@ -351,7 +401,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v4.json'
+$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v5.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -461,15 +511,16 @@ function Get-Sessions($visibility = 'visible') {
             $mtime = $epoch
             $c = $cache[$winPath]
             if ($c -and "$($c.mtime)" -eq $mtime) {
-                $cwd = $c.cwd; $fallback = $c.fallback
+                $cwd = $c.cwd; $fallback = $c.fallback; $continued = $c.continued
                 $customTitle = $c.customTitle; $aiTitle = $c.aiTitle
             } else {
-                $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null
+                $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continued = $false
                 $transitionSource = $null; $transitionTitle = $null
                 foreach ($line in [System.IO.File]::ReadLines($winPath)) {
                     if (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
+                    elseif ($line.StartsWith('{"type":"continued-in"')) { $continued = $true }
                     if (-not $fallback -and $line -match '"summary"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
                     # Claude user content can be either a string or an array of text
                     # blocks. Parse JSON for the fallback instead of assuming a string.
@@ -488,11 +539,11 @@ function Get-Sessions($visibility = 'visible') {
                         $transitionSource = 'Codex'; $transitionTitle = $Matches[1]
                     }
                 }
-                $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback
+                $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback; continued = $continued
                                       customTitle = $customTitle; aiTitle = $aiTitle
                                       transitionSource = $transitionSource; transitionTitle = $transitionTitle }
             }
-            if (-not $cwd) { return }
+            if (-not $cwd -or $continued) { return }
 
             # Title priority: live rename (sessions/) > rename in transcript > auto title > deduced
             $title = Get-RealName $meta $id
@@ -616,13 +667,15 @@ After every completed repository change, automatically create a local Git commit
 #   isSidechain            : subagent conversations, not this chat
 #   isMeta / system-reminder: harness noise the user never typed
 # so what's left is the intent/decisions/dead-ends that only exist in the conversation.
-function Get-ChatMessages($transcript) {
+# $since keeps only messages written after it (the delta for a resumed handoff).
+function Get-ChatMessages($transcript, $since) {
     $msgs = New-Object System.Collections.ArrayList
     foreach ($line in [System.IO.File]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
         if ($d.type -ne 'user' -and $d.type -ne 'assistant') { continue }
         if ($d.isSidechain -or $d.isMeta) { continue }
+        if ($since -and [DateTimeOffset]$d.timestamp -le $since) { continue }
 
         # content is either a bare string (typed user message) or an array of blocks
         $c = $d.message.content
@@ -648,7 +701,7 @@ function Get-ChatMessages($transcript) {
 
 # Compact state pack from Claude transcript tool calls and recent chat. This is not a
 # substitute for reading live files; it is a recovery map for a new agent session.
-function Get-HandoffStateMarkdown($transcript, $label) {
+function Get-HandoffStateMarkdown($transcript, $label, $since) {
     $lastUser = $null; $lastAssistant = $null
     $calls = New-Object System.Collections.ArrayList
     $files = New-Object System.Collections.ArrayList
@@ -658,6 +711,7 @@ function Get-HandoffStateMarkdown($transcript, $label) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
         if ($d.isSidechain -or $d.isMeta) { continue }
+        if ($since -and $d.timestamp -and [DateTimeOffset]$d.timestamp -le $since) { continue }
 
         if ($d.type -eq 'user' -or $d.type -eq 'assistant') {
             $c = $d.message.content
@@ -735,9 +789,10 @@ function ConvertTo-ChatMarkdown($msgs) {
     return ($out.ToArray() -join "`n")
 }
 
-# Export a transcript as a chat-only markdown handoff and return its WSL path.
-function New-Handoff($transcript, $id, $cwd, $title) {
-    $msgs = @(Get-ChatMessages $transcript)
+# Export a transcript as a chat-only markdown handoff and return its WSL path, or $null when
+# there are no messages (after $since, when given).
+function New-Handoff($transcript, $id, $cwd, $title, $since) {
+    $msgs = @(Get-ChatMessages $transcript $since)
     if (-not $msgs) { return $null }
     $safeTitle = "$title" -replace '[\r\n\]]', ' '
 
@@ -749,6 +804,7 @@ function New-Handoff($transcript, $id, $cwd, $title) {
         "- Conversation title: $safeTitle"
         "- Exported: $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
         "- Source transcript: ``$transcript``"
+        $(if ($since) { "- Only messages after $($since.ToString('yyyy-MM-dd HH:mm:ss')), the previous handoff to you" })
         ""
         "Includes a compact state pack plus chat transcript. Tool outputs may be abbreviated."
         "Anything quoted from a file is a snapshot from when it was written -- read"
@@ -761,18 +817,54 @@ function New-Handoff($transcript, $id, $cwd, $title) {
     # carry LF -- mixing the two would leave stray CRs mid-document.
     $fileName = New-HandoffFileName $id
     $fileWin = Join-Path $handoffWin $fileName
-    [System.IO.File]::WriteAllText($fileWin, $head + "`n" + (Get-HandoffStateMarkdown $transcript 'Claude Code') + "`n" + (ConvertTo-ChatMarkdown $msgs) + "`n")
+    [System.IO.File]::WriteAllText($fileWin, $head + "`n" + (Get-HandoffStateMarkdown $transcript 'Claude Code' $since) + "`n" + (ConvertTo-ChatMarkdown $msgs) + "`n")
     return "$handoffWsl/$fileName"
 }
 
-# Alt-C: continue this conversation in codex, same folder, seeded with the handoff.
+# Where Alt-C continues: a codex session linked by earlier handoffs (newest first, so Enter
+# resumes it) or a new one. Returns @{ Id; Cwd; Title; Since } -- Id $null for a new
+# session -- or $null when cancelled.
+function Select-HandoffTarget($transcript) {
+    $linuxTr = $transcript.Substring("\\wsl$\$distro".Length) -replace '\\','/'
+    $links = @(wsl.exe -d $distro -- bash $linksShWsl $linuxTr | Where-Object { $_ })
+    $new = [pscustomobject]@{ Id = $null }
+    if (-not $links) { return $new }
+    $rows = @(foreach ($link in $links) {
+        $mtime, $linkId, $linkCwd, $stamp, $linkTitle = $link -split "`t"
+        $folder = (($linkCwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
+        $age = Format-Age ([DateTimeOffset]::FromUnixTimeSeconds([long]$mtime).LocalDateTime)
+        "resume codex: {0} - {1} - {2} ago [..-{3}]`t{4}" -f $folder, $(if ($linkTitle) { $linkTitle } else { 'untitled' }), $age, ($linkId -split '-')[-1], $link
+    }) + "+ new codex session with the full handoff`t__NEW__"
+    [System.IO.File]::WriteAllLines($dirListWin, [string[]]$rows)
+    Remove-Item $pickWin -ErrorAction SilentlyContinue
+    wsl.exe -d $distro -- bash $linkPickShWsl $dirListWsl $pickWsl
+    $p = @(if (Test-Path $pickWin) { Get-Content $pickWin | Where-Object { $_ } })
+    if (-not $p) { return $null }
+    $link = $p[0].Substring($p[0].IndexOf("`t") + 1)
+    if ($link -eq '__NEW__') { return $new }
+    $mtime, $linkId, $linkCwd, $stamp, $linkTitle = $link -split "`t"
+    # Handoff names carry the local export time; this session's messages after it are new there.
+    $since = if ($stamp) { [DateTimeOffset][datetime]::ParseExact($stamp, 'yyyyMMdd-HHmmss', $null) }
+    return [pscustomobject]@{ Id = $linkId; Cwd = $linkCwd; Title = $linkTitle; Since = $since }
+}
+
+# Alt-C: continue this conversation in codex, seeded with the handoff -- a new codex session
+# in the same folder, or a linked one resumed in its own folder with the messages since.
 function Invoke-Codex($id, $cwd, $transcript, $title) {
     if (-not $transcript -or -not (Test-Path $transcript)) {
         Write-Host "No transcript found for $id"; Start-Sleep -Milliseconds 900; return
     }
+    $target = Select-HandoffTarget $transcript
+    if (-not $target) { return }
     Write-Host "Exporting chat for codex..." -NoNewline
-    $handoff = New-Handoff $transcript $id $cwd $title
+    $handoff = New-Handoff $transcript $id $cwd $title $target.Since
     Write-Host "`r                           `r" -NoNewline
+    if ($target.Id) {
+        $linkTitle = if ($target.Title) { $target.Title } else { $target.Id }
+        $command = if ($handoff) { "bash $codexShWsl $handoff $($target.Id)" } else { "codex -c tui.fullscreen_transcript=false resume $($target.Id)" }
+        Open-WtTab "codex: $linkTitle" $target.Cwd $command
+        return
+    }
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
     Open-WtTab $tabTitle $cwd "bash $codexShWsl $handoff"
