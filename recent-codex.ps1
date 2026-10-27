@@ -370,7 +370,10 @@ id=`$(basename "`$1" .jsonl | grep -aoE '[0-9a-f-]{36}`$')
     done
     title=`$(grep -aoE '"customTitle":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
     [ -n "`$title" ] || title=`$(grep -aoE '"aiTitle":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
-    printf '%s\t%s\t%s\t%s\t%s\n' "`$(stat -c %Y "`$f")" "`$(basename "`$f" .jsonl)"         "`$(grep -am1 -oE '"cwd":"[^"]*"' "`$f" | cut -d'"' -f4)" "`$stamp" "`$title"
+    # /cd moves a Claude session permanently: the last relocatedCwd wins over the starting cwd.
+    cwd=`$(grep -aoE '"relocatedCwd":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
+    [ -n "`$cwd" ] || cwd=`$(grep -am1 -oE '"cwd":"[^"]*"' "`$f" | cut -d'"' -f4)
+    printf '%s\t%s\t%s\t%s\t%s\n' "`$(stat -c %Y "`$f")" "`$(basename "`$f" .jsonl)" "`$cwd" "`$stamp" "`$title"
 done | sort -t`$'\t' -k2,2 -k4,4r | awk -F'\t' '!seen[`$2]++' | sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($linksShWin, $linksSh)

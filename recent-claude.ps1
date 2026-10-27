@@ -401,7 +401,7 @@ function Format-Age($lastWrite) {
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v6.json'
+$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v7.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -517,7 +517,10 @@ function Get-Sessions($visibility = 'visible') {
                 $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continuedIn = $null
                 $transitionSource = $null; $transitionTitle = $null
                 foreach ($line in [System.IO.File]::ReadLines($winPath)) {
-                    if (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
+                    # /cd moves the session permanently and records it as a relocated entry (last one wins);
+                    # later per-line cwds only follow the shell, so otherwise the first cwd is the session's.
+                    if ($line -match '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"') { $cwd = $Matches[1] }
+                    elseif (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
                     elseif ($line -match '^\{"type":"continued-in".*"continuedInSessionId":"([^"]+)"') { $continuedIn = $Matches[1] }
