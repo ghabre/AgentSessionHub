@@ -1,8 +1,8 @@
 # Repository Guidelines
 
-## Local Commit Policy
+## Commit and Push Policy
 
-After every completed repository change, automatically create a local Git commit with a concise, meaningful message describing the result. Do not wait for a separate request. Keep commits focused, verify the staged diff, and never push unless the user explicitly requests a remote push.
+After every completed repository change, automatically create a Git commit with a concise, meaningful message describing the result and push it to `origin`, which backs up this tooling repo. Do not wait for a separate request. Keep commits focused and verify the staged diff.
 
 ## Project Structure & Module Organization
 
