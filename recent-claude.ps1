@@ -399,6 +399,10 @@ function Format-Age($lastWrite) {
     return "{0}w" -f [int]($span.TotalDays / 7)
 }
 
+# /cd moves a session permanently and records it as a relocated entry (last one wins);
+# per-line cwds only follow the shell, so otherwise the first cwd is the session's.
+$relocatedPattern = '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"'
+
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
 $cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v7.json'
@@ -517,9 +521,7 @@ function Get-Sessions($visibility = 'visible') {
                 $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continuedIn = $null
                 $transitionSource = $null; $transitionTitle = $null
                 foreach ($line in [System.IO.File]::ReadLines($winPath)) {
-                    # /cd moves the session permanently and records it as a relocated entry (last one wins);
-                    # later per-line cwds only follow the shell, so otherwise the first cwd is the session's.
-                    if ($line -match '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"') { $cwd = $Matches[1] }
+                    if ($line -match $relocatedPattern) { $cwd = $Matches[1] }
                     elseif (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
@@ -1229,29 +1231,33 @@ while ($true) {
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
     # transcripts into one handoff and seed a single new session (enter/alt-c), or one
     # combined clipboard copy (alt-f). The __NEW__ row can't be combined, so drop it first.
-    $realItems = @(foreach ($row in $picked) {
+    # A /cd since the scan moved the transcript into the new folder's project dir: find it again
+    # and re-read its relocation so picks follow the move without an Esc reload.
+    $items = @(foreach ($row in $picked) {
         $p = $row -split "`t"
-        if ($p[1] -ne '__NEW__') { [pscustomobject]@{ Id = $p[1]; Cwd = $p[2]; Tr = $p[3] } }
+        $item = [pscustomobject]@{ Id = $p[1]; Cwd = $p[2]; Tr = $p[3]; Title = $p[4] }
+        if ($item.Id -ne '__NEW__') {
+            if (-not (Test-Path -LiteralPath $item.Tr)) { $item.Tr = (Get-Item "$projects\*\$($item.Id).jsonl" | Select-Object -First 1).FullName }
+            $relocated = Select-String -LiteralPath $item.Tr -Pattern $relocatedPattern | Select-Object -Last 1
+            if ($relocated) { $item.Cwd = $relocated.Matches[0].Groups[1].Value }
+        }
+        $item
     })
+    $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
     if ($realItems.Count -ge 2) {
         if ($key -eq 'alt-f') { Invoke-CombineCopy $realItems }
         else                  { Invoke-CombineSession $realItems $tool }
         continue
     }
 
-    foreach ($row in $picked) {
-        $parts = $row -split "`t"
-        $id    = $parts[1]
-        $cwd   = $parts[2]
-        $tr    = $parts[3]
+    foreach ($it in $items) {
         if ($key -eq 'alt-f') {   # copy to clipboard, open nothing
-            if ($id -eq '__NEW__') { Write-Host "Nothing to copy: that row starts a new session."; Start-Sleep -Milliseconds 900; continue }
-            Invoke-CopyExport $id $cwd $tr; continue
+            if ($it.Id -eq '__NEW__') { Write-Host "Nothing to copy: that row starts a new session."; Start-Sleep -Milliseconds 900; continue }
+            Invoke-CopyExport $it.Id $it.Cwd $it.Tr; continue
         }
-        if ($id -eq '__NEW__')  { Invoke-NewSession $tool; continue }   # top row: start fresh
-        $title = $parts[4]
-        if ($tool -eq 'codex')  { Invoke-Codex $id $cwd $tr $title; continue }  # resume in codex
-        $tabTitle = if ($title) { "claude: $title" } else { "claude: $id" }
-        Open-WtTab $tabTitle $cwd "claude --resume $id"
+        if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
+        if ($tool -eq 'codex')    { Invoke-Codex $it.Id $it.Cwd $it.Tr $it.Title; continue }  # resume in codex
+        $tabTitle = if ($it.Title) { "claude: $($it.Title)" } else { "claude: $($it.Id)" }
+        Open-WtTab $tabTitle $it.Cwd "claude --resume $($it.Id)"
     }
 }
