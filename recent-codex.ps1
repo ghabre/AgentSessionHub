@@ -181,7 +181,8 @@ $clickBinds
 # slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
 # script file keeps them intact). Approval reviewers and other internal agents are stored
 # beside real sessions. Reject child metadata generically as well as both the older
-# "subagent" and newer "guardian_review" labels, so internal UUIDs never become rows.
+# "subagent" and newer "guardian_review" labels, so internal UUIDs never become rows, and
+# headless codex exec runs (source "exec") as well.
 # Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
@@ -192,7 +193,7 @@ else
     find "/home/$wslUser/.codex/sessions" -name '*.jsonl' -mtime -40 -printf '%T@\t%p\n' 2>/dev/null
 fi |
 while IFS=`$'\t' read -r session_mtime session_path; do
-    if ! head -n 1 "`$session_path" | grep -Eq '"parent_thread_id":|"source":\{"subagent":|"thread_source":"(subagent|guardian_review)"'; then
+    if ! head -n 1 "`$session_path" | grep -Eq '"parent_thread_id":|"source":(\{"subagent":|"exec")|"thread_source":"(subagent|guardian_review)"'; then
         printf '%s\t%s\n' "`$session_mtime" "`$session_path"
     fi
 done |

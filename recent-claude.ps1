@@ -182,7 +182,8 @@ $clickBinds
 # scan.sh: enumerate top-level transcripts natively (find over \\wsl$ from Windows is
 # slow, and wsl.exe mangles backslash escapes like \t when passed as arguments -- a
 # script file keeps them intact). Claude stores internal agents under subagents/, so
-# exclude that path. This mirrors the Codex metadata filter.
+# exclude that path; headless runs (claude -p, Agent SDK) start with an sdk-* entrypoint,
+# so exclude those too. This mirrors the Codex metadata filter.
 # Emits "epoch-mtime<TAB>linux-path".
 $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
@@ -192,7 +193,12 @@ if [ "`$1" = all ]; then
 else
     find "/home/$wslUser/.claude/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 fi |
-sort -rn
+while IFS=`$'\t' read -r session_mtime session_path; do
+    if ! grep -am1 -oE '"entrypoint":"[^"]*"' "`$session_path" | grep -q '"sdk-'; then
+        printf '%s\t%s\n' "`$session_mtime" "`$session_path"
+    fi
+done |
+    sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($scanShWin, $scanSh)
 
