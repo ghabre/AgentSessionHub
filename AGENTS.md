@@ -6,7 +6,7 @@ After every completed repository change, automatically create a Git commit with 
 
 ## Project Structure & Module Organization
 
-This repository contains Windows launchers and PowerShell utilities for Codex and Claude Code sessions stored in WSL.
+This repository contains Windows launchers and PowerShell utilities for Codex and Claude Code sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see each picker's header).
 
 - `recent-codex.ps1` and `recent-claude.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
 - `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open both pickers as tabs. `codex.cmd` and `claude.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
@@ -35,7 +35,7 @@ $errors = $null
 $errors
 ```
 
-An empty result means parsing succeeded. Functional testing requires Windows, WSL2, Linux `fzf`, and the relevant CLI. `pandoc` is required only for formatted clipboard export.
+An empty result means parsing succeeded. Functional testing requires Windows, WSL2, Linux `fzf`, and the relevant CLI for the default backend; the windows backend needs Git for Windows, Windows `fzf`, PowerShell 7 and the native CLI instead. Changes to shared paths should keep both backends working. `pandoc` is required only for formatted clipboard export.
 
 ## Coding Style & Naming Conventions
 

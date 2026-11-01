@@ -43,9 +43,15 @@
 # it keeps the 10 most recent. They land on the Windows side on purpose: the originals only
 # exist inside the WSL VHD. Override the location with $env:CLAUDE_BACKUP_DIR.
 #
-# Requirements:
+# Backend: $env:AGENT_HUB_BACKEND = 'wsl' (default) or 'windows'.
+#   wsl     : Claude Code installed INSIDE WSL; the requirements below apply as written.
+#   windows : Claude Code installed natively (data under %USERPROFILE%\.claude). The same
+#             helper scripts run under Git for Windows' bash; fzf, pandoc and codex come
+#             from the Windows PATH, and tabs open in PowerShell 7, whose profile supplies
+#             per-shell tools such as fnm's codex. No WSL is used.
+#
+# Requirements (wsl backend):
 #   - Windows with WSL2, and Claude Code installed INSIDE WSL (data under ~/.claude).
-#     (Claude Code run natively on Windows keeps data elsewhere and is not supported.)
 #   - Windows Terminal (wt.exe) -- used to open the resumed sessions as tabs.
 #   - The Linux build of fzf installed in WSL (NOT fzf.exe -- the Windows build
 #     mis-parses Windows Terminal mouse input). apt: `sudo apt install fzf`, or grab a
@@ -64,19 +70,73 @@
 $ErrorActionPreference = 'Stop'
 $script:recentScriptArgs = @($args)
 
-# Default WSL distro: $env:WSL_DISTRO override, else the registered default distro
-# (DefaultDistribution GUID -> DistributionName), else fall back to 'Ubuntu'.
-$distro = if ($env:WSL_DISTRO) { $env:WSL_DISTRO } else {
-    try {
-        $lxss    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
-        $defGuid = (Get-ItemProperty $lxss -Name DefaultDistribution -ErrorAction Stop).DefaultDistribution
-        (Get-ItemProperty "$lxss\$defGuid" -Name DistributionName -ErrorAction Stop).DistributionName
-    } catch { 'Ubuntu' }
+# File.ReadLines refuses files another process holds open for writing, which native agents
+# do with their live transcripts. Stream lines with read/write sharing instead.
+Add-Type -TypeDefinition @'
+public static class SharedFile {
+    public static System.Collections.Generic.IEnumerable<string> ReadLines(string path) {
+        using (var stream = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+                                                     System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+        using (var reader = new System.IO.StreamReader(stream)) {
+            string line;
+            while ((line = reader.ReadLine()) != null) { yield return line; }
+        }
+    }
+}
+'@
+
+$backend = if ($env:AGENT_HUB_BACKEND) { $env:AGENT_HUB_BACKEND.ToLowerInvariant() } else { 'wsl' }
+if ($backend -notin @('wsl', 'windows')) { throw "AGENT_HUB_BACKEND must be 'wsl' or 'windows', not '$backend'" }
+
+# C:\dir\sub -> /mnt/c/dir/sub in WSL, /c/dir/sub in Git Bash. One definition for every
+# Windows path this script hands to the helper scripts (temp dir, new-session root, backup dir).
+function ConvertTo-WslPath($winPath) {
+    $mount = if ($backend -eq 'wsl') { '/mnt/' } else { '/' }
+    $mount + ($winPath.Substring(0,1).ToLower()) + ($winPath.Substring(2) -replace '\\','/')
 }
 
-# Resolve WSL home (username may differ from Windows)
-$wslUser  = if ($env:WSL_USER) { $env:WSL_USER } else { (wsl -d $distro -- whoami).Trim() }
-$claude   = "\\wsl$\$distro\home\$wslUser\.claude"
+# The reverse, for paths the helper scripts print: WSL files are reached over \\wsl$.
+function ConvertFrom-WslPath($path) {
+    if ($backend -eq 'wsl') { return "\\wsl$\$distro" + ($path -replace '/','\') }
+    if ($path -match '^/([a-zA-Z])(/.*)?$') { return $Matches[1].ToUpper() + ':' + ("$($Matches[2])" -replace '/','\') }
+    return $path
+}
+
+if ($backend -eq 'wsl') {
+    # Default WSL distro: $env:WSL_DISTRO override, else the registered default distro
+    # (DefaultDistribution GUID -> DistributionName), else fall back to 'Ubuntu'.
+    $distro = if ($env:WSL_DISTRO) { $env:WSL_DISTRO } else {
+        try {
+            $lxss    = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+            $defGuid = (Get-ItemProperty $lxss -Name DefaultDistribution -ErrorAction Stop).DefaultDistribution
+            (Get-ItemProperty "$lxss\$defGuid" -Name DistributionName -ErrorAction Stop).DistributionName
+        } catch { 'Ubuntu' }
+    }
+
+    # Resolve WSL home (username may differ from Windows)
+    $wslUser  = if ($env:WSL_USER) { $env:WSL_USER } else { (wsl -d $distro -- whoami).Trim() }
+    $bashHome = "/home/$wslUser"
+    $claude   = "\\wsl$\$distro\home\$wslUser\.claude"
+    $bashCommand = 'bash'
+} else {
+    $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+    if (-not (Test-Path $gitBash)) { throw "The windows backend needs Git for Windows: $gitBash not found" }
+    $bashHome = ConvertTo-WslPath $HOME
+    $claude   = Join-Path $HOME '.claude'
+    # Tab commands run in PowerShell, where a bare 'bash' would be WSL's System32 bash.exe.
+    $bashCommand = "& '$gitBash'"
+    $tabShell = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }
+}
+
+# Run a helper script in the backend's bash. Leave the output unpiped for fzf so the
+# console stays attached (see the fzf notes below).
+function Invoke-Bash {
+    if ($backend -eq 'wsl') { wsl.exe -d $distro -- bash @args } else { & $gitBash @args }
+}
+
+function Invoke-Git {
+    if ($backend -eq 'wsl') { wsl.exe -d $distro -- git @args } else { git @args }
+}
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
 $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
@@ -90,8 +150,13 @@ $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW }
 # wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
 function Open-WtTab($title, $cwd, $command) {
-    & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') `
-        wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
+    if ($backend -eq 'wsl') {
+        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') `
+            wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
+    } else {
+        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') -d ($cwd -replace ';', '\;') `
+            $tabShell -NoLogo -Command ($command -replace ';', '\;')
+    }
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
 }
 
@@ -108,14 +173,19 @@ function Open-WtTab($title, $cwd, $command) {
 # Resolve fzf inside WSL: prefer whatever's on the login-shell PATH (apt installs it at
 # /usr/bin/fzf), fall back to the per-user ~/.local/bin location. Works regardless of how
 # fzf was installed. NOTE: it must be the Linux build, not fzf.exe (see below).
-$fzfPath = (wsl.exe -d $distro -- bash -lic "command -v fzf 2>/dev/null" 2>$null | Select-Object -Last 1)
-if ($fzfPath) { $fzfPath = $fzfPath.Trim() }
-if (-not $fzfPath) { $fzfPath = "/home/$wslUser/.local/bin/fzf" }
-
-# C:\dir\sub -> /mnt/c/dir/sub. One definition for every Windows path this script hands to
-# WSL (temp dir, new-session root, backup dir) -- they all mean the same conversion.
-function ConvertTo-WslPath($winPath) {
-    '/mnt/' + ($winPath.Substring(0,1).ToLower()) + ($winPath.Substring(2) -replace '\\','/')
+#
+# The windows backend has no Linux fzf, so it uses fzf.exe from the PATH. fzf.exe runs
+# bind commands through cmd unless told otherwise, and the click binds below are bash; it
+# also splits --with-shell on spaces, hence the space-free 8.3 path of Git's bash.
+$fzfShellOption = ''
+if ($backend -eq 'wsl') {
+    $fzfPath = (wsl.exe -d $distro -- bash -lic "command -v fzf 2>/dev/null" 2>$null | Select-Object -Last 1)
+    if ($fzfPath) { $fzfPath = $fzfPath.Trim() }
+    if (-not $fzfPath) { $fzfPath = "/home/$wslUser/.local/bin/fzf" }
+} else {
+    $fzfPath = 'fzf'
+    $fzfBash = (New-Object -ComObject Scripting.FileSystemObject).GetFile((Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')).ShortPath -replace '\\','/'
+    $fzfShellOption = "    --with-shell='$fzfBash -c' \`n"
 }
 
 # Keep concurrent picker instances from overwriting each other's list, selection,
@@ -145,10 +215,10 @@ $showShWin = Join-Path $tmpWin 'show.sh'; $showShWsl = "$tmpWsl/show.sh"
 # (not $tmpWsl on /mnt/c) because it's written on every focus change and 9p is slow.
 # Focus fires on start, so the per-process file cannot go stale within this picker.
 $clickStateWsl = "/tmp/recent-claude-$PID-click.state"
-$clickBinds = @"
+$clickBinds = $fzfShellOption + (@"
     --bind "focus:transform:echo {n} > $clickStateWsl" \
     --bind "left-click:transform:if [ \"\`$(cat $clickStateWsl 2>/dev/null)\" = \"{n}\" ]; then echo accept; fi" \
-"@ -replace "`r`n","`n"
+"@ -replace "`r`n","`n")
 
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
@@ -189,9 +259,9 @@ $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
 if [ "`$1" = all ]; then
-    find "/home/$wslUser/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+    find "$bashHome/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 else
-    find "/home/$wslUser/.claude/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+    find "$bashHome/.claude/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 fi |
 while IFS=`$'\t' read -r session_mtime session_path; do
     if ! grep -am1 -oE '"entrypoint":"[^"]*"' "`$session_path" | grep -q '"sdk-'; then
@@ -241,9 +311,16 @@ $clickBinds
 # so the handoff still works with the Claude quota exhausted.
 #
 # Handoffs live in the WSL-local /tmp (reachable from Windows via \\wsl$): codex reads it
-# from inside WSL, and keeping it out of the repo means no stray file to commit.
-$handoffWsl = '/tmp/recent-claude-handoff'
-$handoffWin = "\\wsl$\$distro\tmp\recent-claude-handoff"
+# from inside WSL, and keeping it out of the repo means no stray file to commit. The
+# windows backend uses %TEMP% and hands agents the path with forward slashes, which they
+# read fine and which keeps the 'recent-claude-handoff/<id>-' link pattern identical.
+if ($backend -eq 'wsl') {
+    $handoffWsl = '/tmp/recent-claude-handoff'
+    $handoffWin = "\\wsl$\$distro\tmp\recent-claude-handoff"
+} else {
+    $handoffWin = Join-Path $env:TEMP 'recent-claude-handoff'
+    $handoffWsl = $handoffWin -replace '\\','/'
+}
 New-Item -ItemType Directory -Path $handoffWin -Force | Out-Null
 
 # codex.sh: the prompt lives in a script file, not in the wt/wsl command line -- wt treats
@@ -270,7 +347,7 @@ $linksShWin = Join-Path $tmpWin 'links.sh'; $linksShWsl = "$tmpWsl/links.sh"
 $linksSh = @"
 #!/bin/bash
 # `$1 = claude transcript (Linux path)
-projects="/home/$wslUser/.claude/projects"; sessions="/home/$wslUser/.codex/sessions"
+projects="$bashHome/.claude/projects"; sessions="$bashHome/.codex/sessions"
 # Ids this conversation was continued from (continued-in records) are this conversation too.
 files=("`$1"); ids=`$(basename "`$1" .jsonl); frontier=`$ids
 while [ -n "`$frontier" ]; do
@@ -377,7 +454,7 @@ ls -1 "`$dir"/claude-history-*.tar.gz 2>/dev/null | sort | head -n -$backupKeep 
 # Runs once per launch; backup.sh itself decides whether one is actually due.
 function Invoke-Backup {
     Write-Host "Checking transcript backup..." -NoNewline
-    $made = @(wsl.exe -d $distro -- bash $backupShWsl $backupDirWsl | Where-Object { $_ })
+    $made = @(Invoke-Bash $backupShWsl $backupDirWsl | Where-Object { $_ })
     Write-Host "`r                             `r" -NoNewline
     if ($made) {
         $f = Get-Item (Join-Path $backupDir (Split-Path $made[-1] -Leaf)) -ErrorAction SilentlyContinue
@@ -435,7 +512,7 @@ function Get-HiddenSessionIds {
     $hidden = @{}
     if (Test-Path $hiddenSessionsFile) {
         try {
-            foreach ($line in [System.IO.File]::ReadLines($hiddenSessionsFile)) {
+            foreach ($line in [SharedFile]::ReadLines($hiddenSessionsFile)) {
                 $id = $line.Trim()
                 if ($id -match '^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$') {
                     $hidden[$id.ToLowerInvariant()] = $true
@@ -468,7 +545,7 @@ function Show-HiddenSessions {
     }
     [System.IO.File]::WriteAllLines($showListWin, [string[]]$rows)
     Remove-Item $showPickWin -ErrorAction SilentlyContinue
-    wsl.exe -d $distro -- bash $showShWsl $showListWsl $showPickWsl
+    Invoke-Bash $showShWsl $showListWsl $showPickWsl
     $picked = @(if (Test-Path $showPickWin) { Get-Content $showPickWin | Where-Object { $_ } })
     if (-not $picked) { return }
     $selected = @{}
@@ -477,7 +554,7 @@ function Show-HiddenSessions {
         if ($id) { $selected[$id.ToLowerInvariant()] = $true }
     }
     if (-not (Test-Path $hiddenSessionsFile)) { return }
-    $remaining = @(foreach ($line in [System.IO.File]::ReadLines($hiddenSessionsFile)) {
+    $remaining = @(foreach ($line in [SharedFile]::ReadLines($hiddenSessionsFile)) {
         $id = $line.Trim()
         if (-not $id -or -not $selected.ContainsKey($id.ToLowerInvariant())) { $line }
     })
@@ -502,10 +579,10 @@ function Get-Sessions($visibility = 'visible') {
     # Gather top-level sessions updated within 40 days (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
     $scanMode = if ($visibility -eq 'hidden') { 'all' } else { 'recent' }
-    wsl.exe -d $distro -- bash $scanShWsl $scanMode |
+    Invoke-Bash $scanShWsl $scanMode |
         ForEach-Object {
             $epoch, $linuxPath = $_ -split "`t"
-            $winPath   = "\\wsl$\$distro" + ($linuxPath -replace '/','\')
+            $winPath   = ConvertFrom-WslPath $linuxPath
             $lastWrite = [DateTimeOffset]::FromUnixTimeSeconds([long][double]$epoch).LocalDateTime
             $id = [System.IO.Path]::GetFileNameWithoutExtension($linuxPath)
             $normalizedId = $id.ToLowerInvariant()
@@ -526,7 +603,7 @@ function Get-Sessions($visibility = 'visible') {
             } else {
                 $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continuedIn = $null
                 $transitionSource = $null; $transitionTitle = $null
-                foreach ($line in [System.IO.File]::ReadLines($winPath)) {
+                foreach ($line in [SharedFile]::ReadLines($winPath)) {
                     if ($line -match $relocatedPattern) { $cwd = $Matches[1] }
                     elseif (-not $cwd -and $line -match '"cwd"\s*:\s*"([^"]+)"') { $cwd = $Matches[1] }
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
@@ -554,6 +631,8 @@ function Get-Sessions($visibility = 'visible') {
                                       customTitle = $customTitle; aiTitle = $aiTitle
                                       transitionSource = $transitionSource; transitionTitle = $transitionTitle }
             }
+            # Native Windows cwds arrive JSON-escaped (C:\\dir); WSL paths have no backslashes.
+            $cwd = "$cwd" -replace '\\\\','\'
             # A backgrounded job can record a continuation that never writes a transcript.
             if (-not $cwd -or ($continuedIn -and (Test-Path (Join-Path (Split-Path $winPath) "$continuedIn.jsonl")))) { return }
 
@@ -615,13 +694,13 @@ function Update-List {
 # $tool ('claude' or 'codex') is the ONLY difference between the two flows -- it labels
 # the picker and is the command the tab runs -- so both share this one function.
 function Invoke-NewSession($tool) {
-    $dirs = wsl.exe -d $distro -- bash $scanDirShWsl
+    $dirs = Invoke-Bash $scanDirShWsl
     $rootName = Split-Path ($newRoot.TrimEnd('\')) -Leaf
     $rootRow = "$rootName/ (project root)`t$newRootWsl`t$rootName"
     $createRow = "+ Create new project folder...`t__CREATE__"
     [System.IO.File]::WriteAllLines($dirListWin, [string[]](@($rootRow, $createRow) + @($dirs)))
     Remove-Item $pickWin -ErrorAction SilentlyContinue
-    wsl.exe -d $distro -- bash $fzfDirShWsl $dirListWsl $pickWsl $tool
+    Invoke-Bash $fzfDirShWsl $dirListWsl $pickWsl $tool
     # @() must wrap the whole pipeline: Where-Object unwraps a single match back to a
     # scalar string, and $p[0] on a string yields its first CHARACTER -- which made
     # $path null, PowerShell dropped the arg, and wsl saw "--cd --" (Wsl/E_INVALIDARG).
@@ -630,6 +709,8 @@ function Invoke-NewSession($tool) {
     $cols = $p[0] -split "`t"
     $name = if ($cols.Count -gt 2 -and $cols[2]) { $cols[2] } else { $cols[0] }
     $path = $cols[1]
+    # Windows tabs start in a Windows folder; WSL tabs take the Linux path as listed.
+    if ($backend -eq 'windows' -and $path -and $path -ne '__CREATE__') { $path = ConvertFrom-WslPath $path }
     if ($path -eq '__CREATE__') {
         $name = (Read-Host "New project folder name under $newRoot").Trim()
         if (-not $name) { return }
@@ -643,7 +724,7 @@ function Invoke-NewSession($tool) {
             Write-Host "Folder already exists: $newPathWin"; Start-Sleep -Milliseconds 900; return
         }
         New-Item -ItemType Directory -Path $newPathWin | Out-Null
-        $path = ConvertTo-WslPath $newPathWin
+        $path = if ($backend -eq 'wsl') { ConvertTo-WslPath $newPathWin } else { $newPathWin }
         $instructions = @'
 # Agent Instructions
 
@@ -655,11 +736,11 @@ After every completed repository change, automatically create a local Git commit
 '@ -replace "`r`n","`n"
         [System.IO.File]::WriteAllText((Join-Path $newPathWin 'AGENTS.md'), $instructions)
         [System.IO.File]::WriteAllText((Join-Path $newPathWin 'CLAUDE.md'), $instructions)
-        & wsl.exe -d $distro -- git -C $path init --initial-branch=main
+        Invoke-Git -C $path init --initial-branch=main
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not initialize Git in $newPathWin"; Start-Sleep -Milliseconds 900; return }
-        & wsl.exe -d $distro -- git -C $path add AGENTS.md CLAUDE.md
+        Invoke-Git -C $path add AGENTS.md CLAUDE.md
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not stage project instructions"; Start-Sleep -Milliseconds 900; return }
-        & wsl.exe -d $distro -- git -C $path commit -m "Initialize project instructions"
+        Invoke-Git -C $path commit -m "Initialize project instructions"
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
@@ -682,7 +763,7 @@ After every completed repository change, automatically create a local Git commit
 # $since keeps only messages written after it (the delta for a resumed handoff).
 function Get-ChatMessages($transcript, $since) {
     $msgs = New-Object System.Collections.ArrayList
-    foreach ($line in [System.IO.File]::ReadLines($transcript)) {
+    foreach ($line in [SharedFile]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
         if ($d.type -ne 'user' -and $d.type -ne 'assistant') { continue }
@@ -719,7 +800,7 @@ function Get-HandoffStateMarkdown($transcript, $label, $since) {
     $files = New-Object System.Collections.ArrayList
     $snips = New-Object System.Collections.ArrayList
 
-    foreach ($line in [System.IO.File]::ReadLines($transcript)) {
+    foreach ($line in [SharedFile]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
         if ($d.isSidechain -or $d.isMeta) { continue }
@@ -837,8 +918,9 @@ function New-Handoff($transcript, $id, $cwd, $title, $since) {
 # resumes it) or a new one. Returns @{ Id; Cwd; Title; Since } -- Id $null for a new
 # session -- or $null when cancelled.
 function Select-HandoffTarget($transcript) {
-    $linuxTr = $transcript.Substring("\\wsl$\$distro".Length) -replace '\\','/'
-    $links = @(wsl.exe -d $distro -- bash $linksShWsl $linuxTr | Where-Object { $_ })
+    $linuxTr = if ($backend -eq 'wsl') { $transcript.Substring("\\wsl$\$distro".Length) -replace '\\','/' } else { ConvertTo-WslPath $transcript }
+    # Native Windows cwds arrive JSON-escaped (C:\\dir).
+    $links = @(Invoke-Bash $linksShWsl $linuxTr | Where-Object { $_ } | ForEach-Object { $_ -replace '\\\\','\' })
     $new = [pscustomobject]@{ Id = $null }
     if (-not $links) { return $new }
     $rows = @(foreach ($link in $links) {
@@ -849,7 +931,7 @@ function Select-HandoffTarget($transcript) {
     }) + "+ new codex session with the full handoff`t__NEW__"
     [System.IO.File]::WriteAllLines($dirListWin, [string[]]$rows)
     Remove-Item $pickWin -ErrorAction SilentlyContinue
-    wsl.exe -d $distro -- bash $linkPickShWsl $dirListWsl $pickWsl
+    Invoke-Bash $linkPickShWsl $dirListWsl $pickWsl
     $p = @(if (Test-Path $pickWin) { Get-Content $pickWin | Where-Object { $_ } })
     if (-not $p) { return $null }
     $link = $p[0].Substring($p[0].IndexOf("`t") + 1)
@@ -873,13 +955,13 @@ function Invoke-Codex($id, $cwd, $transcript, $title) {
     Write-Host "`r                           `r" -NoNewline
     if ($target.Id) {
         $linkTitle = if ($target.Title) { $target.Title } else { $target.Id }
-        $command = if ($handoff) { "bash $codexShWsl $handoff $($target.Id)" } else { "codex -c tui.fullscreen_transcript=false resume $($target.Id)" }
+        $command = if ($handoff) { "$bashCommand $codexShWsl $handoff $($target.Id)" } else { "codex -c tui.fullscreen_transcript=false resume $($target.Id)" }
         Open-WtTab "codex: $linkTitle" $target.Cwd $command
         return
     }
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-    Open-WtTab $tabTitle $cwd "bash $codexShWsl $handoff"
+    Open-WtTab $tabTitle $cwd "$bashCommand $codexShWsl $handoff"
 }
 
 # --- Alt-F: formatted chat export to the clipboard ---------------------------------
@@ -972,7 +1054,7 @@ function Add-InlineStyle($html, $tag, $css) {
 function ConvertTo-StyledHtml($markdown) {
     [System.IO.File]::WriteAllText($exportMdWin, $markdown)
     Remove-Item $exportHtmlWin -ErrorAction SilentlyContinue
-    wsl.exe -d $distro -- bash $pandocShWsl $exportMdWsl $exportHtmlWsl | Out-Null
+    Invoke-Bash $pandocShWsl $exportMdWsl $exportHtmlWsl | Out-Null
     if (-not (Test-Path $exportHtmlWin)) { return $null }
     $h = [System.IO.File]::ReadAllText($exportHtmlWin)
 
@@ -1066,7 +1148,7 @@ function Invoke-CopyExport($id, $cwd, $transcript) {
 
     $frag = ConvertTo-StyledHtml $md
     Write-Host "`r                                    `r" -NoNewline
-    if (-not $frag) { Write-Host "pandoc failed -- is it installed in WSL?"; Start-Sleep -Milliseconds 1200; return }
+    if (-not $frag) { Write-Host "pandoc failed -- is it installed for the $backend backend?"; Start-Sleep -Milliseconds 1200; return }
 
     $obj = New-Object System.Windows.Forms.DataObject
     $obj.SetData([System.Windows.Forms.DataFormats]::Html, (New-CfHtml $frag))
@@ -1146,7 +1228,7 @@ function Select-CombinedCwd($items) {
     }
     [System.IO.File]::WriteAllLines($dirListWin, [string[]]@($rows))
     Remove-Item $pickWin -ErrorAction SilentlyContinue
-    wsl.exe -d $distro -- bash $fzfDirShWsl $dirListWsl $pickWsl 'combined'
+    Invoke-Bash $fzfDirShWsl $dirListWsl $pickWsl 'combined'
     $p = @(if (Test-Path $pickWin) { Get-Content $pickWin | Where-Object { $_ } })
     if (-not $p) { return $null }
     ($p[0] -split "`t")[1]
@@ -1160,7 +1242,7 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    Open-WtTab ("{0}: combined x{1}" -f $tool, $items.Count) $cwd "bash $comboShWsl $tool $handoff"
+    Open-WtTab ("{0}: combined x{1}" -f $tool, $items.Count) $cwd "$bashCommand $comboShWsl $tool $handoff"
 }
 
 # alt-f on 2+ marked rows: one combined formatted copy to the clipboard (opens nothing).
@@ -1184,7 +1266,7 @@ function Invoke-CombineCopy($items) {
     $md   = $head + "`n" + $r.Body + "`n"
     $frag = ConvertTo-StyledHtml $md
     Write-Host "`r                                            `r" -NoNewline
-    if (-not $frag) { Write-Host "pandoc failed -- is it installed in WSL?"; Start-Sleep -Milliseconds 1200; return }
+    if (-not $frag) { Write-Host "pandoc failed -- is it installed for the $backend backend?"; Start-Sleep -Milliseconds 1200; return }
 
     $obj = New-Object System.Windows.Forms.DataObject
     $obj.SetData([System.Windows.Forms.DataFormats]::Html, (New-CfHtml $frag))
@@ -1205,7 +1287,7 @@ while ($true) {
     # keyboard/mouse/resize all reach fzf. Wheel scrolls, a second click on the
     # highlighted row (or Enter) opens.
     Remove-Item $pickWin -ErrorAction SilentlyContinue
-    wsl.exe -d $distro -- bash $fzfShWsl $listWsl $pickWsl
+    Invoke-Bash $fzfShWsl $listWsl $pickWsl
 
     # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-f',
     # 'alt-h', or 'alt-s') and
@@ -1245,7 +1327,7 @@ while ($true) {
         if ($item.Id -ne '__NEW__') {
             if (-not (Test-Path -LiteralPath $item.Tr)) { $item.Tr = (Get-Item "$projects\*\$($item.Id).jsonl" | Select-Object -First 1).FullName }
             $relocated = Select-String -LiteralPath $item.Tr -Pattern $relocatedPattern | Select-Object -Last 1
-            if ($relocated) { $item.Cwd = $relocated.Matches[0].Groups[1].Value }
+            if ($relocated) { $item.Cwd = $relocated.Matches[0].Groups[1].Value -replace '\\\\','\' }
         }
         $item
     })
