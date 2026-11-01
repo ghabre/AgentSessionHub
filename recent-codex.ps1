@@ -179,6 +179,12 @@ function Open-WtTab($title, $cwd, $command) {
 # The windows backend has no Linux fzf, so it uses fzf.exe from the PATH. fzf.exe runs
 # bind commands through cmd unless told otherwise, and the click binds below are bash; it
 # also splits --with-shell on spaces, hence the space-free 8.3 path of Git's bash.
+#
+# fzf.exe full-screen (the default, and --height=100%) uses its console-API renderer, which
+# is the one that turns wheel scrolls into left-clicks -- and our click binds then open the
+# row under the pointer. Any other --height selects fzf's light renderer, which on Windows
+# reads VT input and parses mouse sequences exactly like the Linux build. --height=-1 is
+# the full terminal minus one line, i.e. effectively full-screen.
 $fzfShellOption = ''
 if ($backend -eq 'wsl') {
     $fzfPath = (wsl.exe -d $distro -- bash -lic "command -v fzf 2>/dev/null" 2>$null | Select-Object -Last 1)
@@ -187,7 +193,7 @@ if ($backend -eq 'wsl') {
 } else {
     $fzfPath = 'fzf'
     $fzfBash = (New-Object -ComObject Scripting.FileSystemObject).GetFile((Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')).ShortPath -replace '\\','/'
-    $fzfShellOption = "    --with-shell='$fzfBash -c' \`n"
+    $fzfShellOption = "    --height=-1 --with-shell='$fzfBash -c' \`n"
 }
 
 # Keep concurrent picker instances from overwriting each other's list, selection,
