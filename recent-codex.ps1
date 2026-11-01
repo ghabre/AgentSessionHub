@@ -176,18 +176,12 @@ function Open-WtTab($title, $cwd, $command) {
 # /usr/bin/fzf), fall back to the per-user ~/.local/bin location. Works regardless of how
 # fzf was installed. NOTE: it must be the Linux build, not fzf.exe (see below).
 #
-# The windows backend has no Linux fzf, so it uses fzf.exe from the PATH. fzf.exe runs
-# bind commands through cmd unless told otherwise, and the click binds below are bash; it
-# also splits --with-shell on spaces, hence the space-free 8.3 path of Git's bash.
-$fzfShellOption = ''
+# The windows backend has no Linux fzf, so it uses fzf.exe from the PATH, through the
+# fzf-win.sh wrapper written below once the temp dir exists.
 if ($backend -eq 'wsl') {
     $fzfPath = (wsl.exe -d $distro -- bash -lic "command -v fzf 2>/dev/null" 2>$null | Select-Object -Last 1)
     if ($fzfPath) { $fzfPath = $fzfPath.Trim() }
     if (-not $fzfPath) { $fzfPath = "/home/$wslUser/.local/bin/fzf" }
-} else {
-    $fzfPath = 'fzf'
-    $fzfBash = (New-Object -ComObject Scripting.FileSystemObject).GetFile((Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')).ShortPath -replace '\\','/'
-    $fzfShellOption = "    --with-shell='$fzfBash -c' \`n"
 }
 
 # Keep concurrent picker instances from overwriting each other's list, selection,
@@ -195,6 +189,29 @@ if ($backend -eq 'wsl') {
 $tmpWin  = Join-Path $env:TEMP ("recent-codex-{0}" -f $PID)
 New-Item -ItemType Directory -Path $tmpWin -Force | Out-Null
 $tmpWsl  = ConvertTo-WslPath $tmpWin
+
+# fzf-win.sh: the windows backend's stand-in for the Linux fzf, used by every picker below.
+# fzf.exe's default full-screen renderer takes mouse input as console records, and the
+# console keeps its own button state: the click that opens a row exits fzf on the PRESS,
+# the release never reaches the console, and from then on every mouse move and wheel tick
+# in the next picker carries a held left button -- fzf sees left-clicks and the click
+# binds open whatever row is under the pointer. Any --height other than 100% selects the
+# light renderer instead, which reads Windows Terminal's VT mouse reports directly, exactly
+# like the Linux build under WSL, so presses and releases come from the terminal itself.
+# -1 is the full window minus one line. That renderer maps click rows from the console
+# cursor position, which is wrong below earlier output, hence homing and clearing first.
+# fzf.exe runs bind commands through cmd unless told otherwise, and the click binds below
+# are bash; it splits --with-shell on spaces, hence the space-free 8.3 path of Git's bash.
+if ($backend -eq 'windows') {
+    $fzfBash = (New-Object -ComObject Scripting.FileSystemObject).GetFile((Join-Path $env:ProgramFiles 'Git\usr\bin\bash.exe')).ShortPath -replace '\\','/'
+    $fzfPath = "$tmpWsl/fzf-win.sh"
+    $fzfWinSh = @"
+#!/bin/bash
+printf '\033[H\033[2J' >&2
+exec fzf --height=-1 --with-shell='$fzfBash -c' "`$@"
+"@ -replace "`r`n","`n"
+    [System.IO.File]::WriteAllText((Join-Path $tmpWin 'fzf-win.sh'), $fzfWinSh)
+}
 $listWin = Join-Path $tmpWin 'list.txt';  $listWsl = "$tmpWsl/list.txt"
 $pickWin = Join-Path $tmpWin 'pick.txt';  $pickWsl = "$tmpWsl/pick.txt"
 $fzfShWin = Join-Path $tmpWin 'fzf.sh';   $fzfShWsl = "$tmpWsl/fzf.sh"
@@ -217,7 +234,7 @@ $showShWin = Join-Path $tmpWin 'show.sh'; $showShWsl = "$tmpWsl/show.sh"
 # (not $tmpWsl on /mnt/c) because it's written on every focus change and 9p is slow.
 # Focus fires on start, so the per-process file cannot go stale within this picker.
 $clickStateWsl = "/tmp/recent-codex-$PID-click.state"
-$clickBinds = $fzfShellOption + (@"
+$clickBinds = (@"
     --bind "focus:transform:echo {n} > $clickStateWsl" \
     --bind "left-click:transform:if [ \"\`$(cat $clickStateWsl 2>/dev/null)\" = \"{n}\" ]; then echo accept; fi" \
 "@ -replace "`r`n","`n")
