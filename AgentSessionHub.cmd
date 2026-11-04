@@ -1,5 +1,6 @@
 @echo off
-rem Agent Session Hub: opens both session pickers as tabs in one Windows Terminal window.
+rem Agent Session Hub: opens enabled session pickers as tabs in one Windows Terminal window.
+rem Set AGENT_HUB_TOOLS to a comma-separated list of codex,claude,opencode (default: all three).
 set "terminal=wt.exe"
 where wt.exe >nul 2>&1
 if not errorlevel 1 goto launch
@@ -42,4 +43,16 @@ rem No other launch can be running now, so the time alone names this hub's windo
 set "AGENT_SESSION_HUB_WINDOW=AgentSessionHub-%day%-%now::=%"
 set "AGENT_SESSION_HUB_WINDOW=%AGENT_SESSION_HUB_WINDOW:.=%"
 set "AGENT_SESSION_HUB_WINDOW=%AGENT_SESSION_HUB_WINDOW:,=%"
-"%terminal%" -w "%AGENT_SESSION_HUB_WINDOW%" new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1" ; new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"
+set "tools=%AGENT_HUB_TOOLS%"
+if not defined tools set "tools=codex,claude,opencode"
+set "tools=,%tools: =%,"
+set "tabs="
+if not "%tools:,codex,=%"=="%tools%" set "tabs=new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1""
+if not "%tools:,claude,=%"=="%tools%" (
+    if defined tabs (set "tabs=%tabs% ; new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"") else set "tabs=new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1""
+)
+if not "%tools:,opencode,=%"=="%tools%" (
+    if defined tabs (set "tabs=%tabs% ; new-tab --title "OpenCode" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-opencode.ps1"") else set "tabs=new-tab --title "OpenCode" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-opencode.ps1""
+)
+if not defined tabs exit /b 1
+"%terminal%" -w "%AGENT_SESSION_HUB_WINDOW%" %tabs%
