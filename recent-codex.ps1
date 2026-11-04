@@ -130,8 +130,7 @@ if ($backend -eq 'wsl') {
         } catch { 'Ubuntu' }
     }
 
-    # Resolve the WSL user, fzf path, and OpenCode DB path in one non-interactive sh call
-    # (~200ms) instead of spawning several `bash -lic` login shells (~700-1200ms each).
+    # Resolve paths in one login shell so profile-defined PATH and data overrides apply.
     # Written to a script file so wsl.exe never mangles quotes or `$` expansions.
     $probeShWin = Join-Path $tmpWin 'probe.sh'; $probeShWsl = "$tmpWsl/probe.sh"
     $probeSh = @'
@@ -149,7 +148,7 @@ fi
 printf '%s\n%s\n%s\n' "$u" "$f" "$db"
 '@ -replace "`r`n","`n"
     [System.IO.File]::WriteAllText($probeShWin, $probeSh)
-    $probe = @(wsl.exe -d $distro -- sh $probeShWsl 2>$null)
+    $probe = @(wsl.exe -d $distro -- bash -li $probeShWsl 2>$null)
     $wslUser       = if ($env:WSL_USER) { $env:WSL_USER } elseif ($probe.Count -ge 1 -and $probe[0]) { "$($probe[0])".Trim() } else { (wsl -d $distro -- whoami).Trim() }
     $bashHome      = "/home/$wslUser"
     $fzfPath       = if ($probe.Count -ge 2 -and $probe[1]) { "$($probe[1])".Trim() } else { "$bashHome/.local/bin/fzf" }
@@ -625,10 +624,12 @@ $clickBinds
 $comboShWin = Join-Path $tmpWin 'combo.sh'; $comboShWsl = "$tmpWsl/combo.sh"
 $comboSh = @"
 #!/bin/bash
-# `$1 = tool (codex|claude), `$2 = combined handoff markdown path.
+# `$1 = tool (codex|claude|opencode), `$2 = combined handoff markdown path.
 prompt="Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
 if [ "`$1" = codex ]; then
     codex -c tui.fullscreen_transcript=false "`$prompt"
+elif [ "`$1" = opencode ]; then
+    opencode --prompt "`$prompt"
 else
     claude "`$prompt"
 fi
