@@ -489,9 +489,17 @@ while frontier and os.path.isdir(projects_dir):
 
 id_group = '|'.join(re.escape(x) for x in ids)
 cl_pat = re.compile(rf'recent-claude-handoff/(?:{id_group})-(\d{{8}}-\d{{6}})')
+oc_pat = re.compile(r'recent-opencode-handoff/(ses_[A-Za-z0-9]+)-')
 inh_pat = re.compile(r'inherited title: ([^\]]*)')
 
 oc_ids = set()
+for fp in files:
+    try:
+        with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+            oc_ids.update(oc_pat.findall(f.read()))
+    except OSError:
+        pass
+
 conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
 for (sid,) in conn.execute("SELECT DISTINCT session_id FROM session_message WHERE data LIKE '%recent-claude-handoff/%'"):
     oc_ids.add(sid)
@@ -509,11 +517,11 @@ for sid in oc_ids:
             m = inh_pat.search(data)
             if m:
                 inh_title = m.group(1)
-    if not stamps:
+    if not stamps and sid not in {m for fp in files if os.path.isfile(fp) for m in oc_pat.findall(open(fp, 'r', encoding='utf-8', errors='ignore').read())}:
         continue
     title = (row[2] or inh_title or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
     mtime = int(row[3] // 1000)
-    rows.append((mtime, row[0], row[1] or "", max(stamps), title))
+    rows.append((mtime, row[0], row[1] or "", max(stamps) if stamps else "", title))
 
 rows.sort(key=lambda r: r[0], reverse=True)
 for r in rows:
@@ -778,8 +786,8 @@ function Get-Sessions($visibility = 'visible') {
                             }
                         } catch {}
                     }
-                    if (-not $transitionSource -and $line -match '\[Transitioned from Codex; inherited title: (.*?)\]') {
-                        $transitionSource = 'Codex'; $transitionTitle = $Matches[1]
+                    if (-not $transitionSource -and $line -match '\[Transitioned from (Codex|OpenCode); inherited title: (.*?)\]') {
+                        $transitionSource = $Matches[1]; $transitionTitle = $Matches[2]
                     }
                 }
                 $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback; continuedIn = $continuedIn

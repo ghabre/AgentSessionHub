@@ -515,47 +515,72 @@ codex -c tui.fullscreen_transcript=false "[Transitioned from OpenCode; inherited
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($codexShWin, $codexSh)
 
-# links-claude.sh: claude sessions seeded or resumed from this OpenCode session's handoffs.
-# Handoff file names start with this session id and end with the export time, so the
-# transcripts alone hold the links and the newest export stamp tells which messages the
-# claude side has already seen. A backgrounded Claude session continues under a new id, so
-# follow continued-in records to the live transcript. Emits
+# links-claude.sh: claude sessions linked to this OpenCode session by earlier handoffs --
+# ones seeded or resumed from its handoff files, and ones whose handoff seeded it.
+# Handoff file names start with the source session id and end with the export time, so
+# the transcripts alone hold the links and the newest export stamp tells which messages
+# the claude side has already seen. A backgrounded Claude session continues under a new id,
+# so follow continued-in records to the live transcript. Emits
 # "mtime<TAB>id<TAB>cwd<TAB>last-export-stamp<TAB>title", newest first.
 $linksClaudeShWin = Join-Path $tmpWin 'links-claude.sh'; $linksClaudeShWsl = "$tmpWsl/links-claude.sh"
 $linksClaudeSh = @"
 #!/bin/bash
-# `$1 = opencode session id
-src="`$1"; projects="$bashHome/.claude/projects"
-grep -arlF --include='*.jsonl' "recent-opencode-handoff/`$src-" "`$projects" 2>/dev/null | grep -v '/subagents/' |
-while read -r f; do
+# `$1 = opencode session id, `$2 = opencode.db (Linux path), `$3 = Python wrapper
+src="`$1"; db="`$2"; py="`$3"; projects="$bashHome/.claude/projects"
+{
+    "`$py" - "`$db" "`$src" <<'PY' | while read -r cid; do [ -n "`$cid" ] && find "`$projects" -name "`$cid.jsonl" -not -path '*/subagents/*' 2>/dev/null; done
+import re, sqlite3, sys
+db, sid = sys.argv[1], sys.argv[2]
+try:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    pat = re.compile(r'recent-claude-handoff/([0-9a-f-]{36})-')
+    seen = {m for (d,) in conn.execute("SELECT data FROM session_message WHERE session_id = ?", (sid,)) for m in pat.findall(d)}
+    for x in sorted(seen): print(x)
+except Exception:
+    pass
+PY
+    grep -arlF --include='*.jsonl' "recent-opencode-handoff/`$src-" "`$projects" 2>/dev/null | grep -v '/subagents/'
+} | sort -u | while read -r f; do
+    [ -f "`$f" ] || continue
     head -n 1 "`$f" | grep -aEq '"parent_thread_id":|"source":\{"subagent":|"thread_source":"(subagent|guardian_review)"' && continue
+    stamp=`$(grep -aohE "recent-opencode-handoff/`$src-[0-9]{8}-[0-9]{6}" "`$f" | grep -aoE '[0-9]{8}-[0-9]{6}`$' | sort | tail -n 1)
     while next=`$(grep -am1 -oE '"continuedInSessionId":"[0-9a-f-]{36}"' "`$f" | cut -d'"' -f4); [ -n "`$next" ] && [ -f "`$(dirname "`$f")/`$next.jsonl" ]; do
         f="`$(dirname "`$f")/`$next.jsonl"
     done
-    stamp=`$(grep -aohE "recent-opencode-handoff/`$src-[0-9]{8}-[0-9]{6}" "`$f" | grep -aoE '[0-9]{8}-[0-9]{6}`$' | sort | tail -n 1)
-    [ -n "`$stamp" ] || continue
     title=`$(grep -aoE '"customTitle":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
     [ -n "`$title" ] || title=`$(grep -aoE '"aiTitle":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
     [ -n "`$title" ] || title=`$(grep -am1 -oE 'inherited title: [^]]*' "`$f" | cut -c18-)
     cwd=`$(grep -aoE '"relocatedCwd":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
     [ -n "`$cwd" ] || cwd=`$(grep -am1 -oE '"cwd":"[^"]*"' "`$f" | cut -d'"' -f4)
     printf '%s\t%s\t%s\t%s\t%s\n' "`$(stat -c %Y "`$f")" "`$(basename "`$f" .jsonl)" "`$cwd" "`$stamp" "`$title"
-done | sort -rn
+done | sort -t`$'\t' -k2,2 -k4,4r | awk -F'\t' '!seen[`$2]++' | sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($linksClaudeShWin, $linksClaudeSh)
 
-# links-codex.sh: codex sessions seeded or resumed from this OpenCode session's handoffs.
+# links-codex.sh: codex sessions linked to this OpenCode session by earlier handoffs.
 # Same contract and output as links-claude.sh, over ~/.codex/sessions.
 $linksCodexShWin = Join-Path $tmpWin 'links-codex.sh'; $linksCodexShWsl = "$tmpWsl/links-codex.sh"
 $linksCodexSh = @"
 #!/bin/bash
-# `$1 = opencode session id
-src="`$1"; sessions="$bashHome/.codex/sessions"
-grep -arlF --include='*.jsonl' "recent-opencode-handoff/`$src-" "`$sessions" 2>/dev/null |
-while read -r f; do
+# `$1 = opencode session id, `$2 = opencode.db (Linux path), `$3 = Python wrapper
+src="`$1"; db="`$2"; py="`$3"; sessions="$bashHome/.codex/sessions"
+{
+    "`$py" - "`$db" "`$src" <<'PY' | while read -r xid; do [ -n "`$xid" ] && find "`$sessions" -name "*`$xid.jsonl" 2>/dev/null; done
+import re, sqlite3, sys
+db, sid = sys.argv[1], sys.argv[2]
+try:
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    pat = re.compile(r'recent-codex-handoff/([0-9a-f-]{36})-')
+    seen = {m for (d,) in conn.execute("SELECT data FROM session_message WHERE session_id = ?", (sid,)) for m in pat.findall(d)}
+    for x in sorted(seen): print(x)
+except Exception:
+    pass
+PY
+    grep -arlF --include='*.jsonl' "recent-opencode-handoff/`$src-" "`$sessions" 2>/dev/null
+} | sort -u | while read -r f; do
+    [ -f "`$f" ] || continue
     head -n 1 "`$f" | grep -aEq '"parent_thread_id":|"source":\{"subagent":|"thread_source":"(subagent|guardian_review)"' && continue
     stamp=`$(grep -aohE "recent-opencode-handoff/`$src-[0-9]{8}-[0-9]{6}" "`$f" | grep -aoE '[0-9]{8}-[0-9]{6}`$' | sort | tail -n 1)
-    [ -n "`$stamp" ] || continue
     printf '%s\t%s\t%s\t%s\t%s\n' "`$(stat -c %Y "`$f")" "`$(basename "`$f" .jsonl | grep -aoE '[0-9a-f-]{36}`$')" \
         "`$(grep -am1 -oE '"cwd":"[^"]*"' "`$f" | cut -d'"' -f4)" "`$stamp" "`$(grep -am1 -oE 'inherited title: [^]]*' "`$f" | cut -c18-)"
 done | sort -rn
@@ -1049,9 +1074,9 @@ function New-Handoff($id, $cwd, $title, $since) {
 function Select-HandoffTarget($id, $tool) {
     # Native Windows cwds arrive JSON-escaped (C:\\dir).
     $links = @($(if ($tool -eq 'codex') {
-        Invoke-Bash $linksCodexShWsl $id
+        Invoke-Bash $linksCodexShWsl $id $opencodeDbWsl $pyShWsl
     } else {
-        Invoke-Bash $linksClaudeShWsl $id
+        Invoke-Bash $linksClaudeShWsl $id $opencodeDbWsl $pyShWsl
     }) | Where-Object { $_ } | ForEach-Object { $_ -replace '\\\\','\' })
     $new = [pscustomobject]@{ Id = $null }
     if (-not $links) { return $new }
