@@ -6,16 +6,18 @@ After every completed repository change, automatically create a Git commit with 
 
 ## Project Structure & Module Organization
 
-This repository contains Windows launchers and PowerShell utilities for Codex and Claude Code sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see each picker's header).
+This repository contains Windows launchers and PowerShell utilities for Codex, Claude Code and OpenCode sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see each picker's header).
 
-- `recent-codex.ps1` and `recent-claude.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
-- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open both pickers as tabs. `codex.cmd` and `claude.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
+- `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
+- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. `AGENT_HUB_TOOLS` is a comma-separated list drawn from `codex,claude,opencode` and defaults to all three. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
-- `backups/{codex,claude}/` contains generated transcript archives. Treat these as data, not source, and do not edit archives manually.
+- `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
+
+OpenCode stores all projects in one SQLite database (`~/.local/share/opencode/opencode.db` by default); `recent-opencode.ps1` reads it with Python 3 and snapshots it through SQLite's online backup API. Its global instructions live in `~/.config/opencode/AGENTS.md`, which points at the same shared memory file used by Codex and Claude.
 
 ## Paired Script Changes
 
-Treat `recent-codex.ps1` and `recent-claude.ps1` as mirrored implementations. Apply changes to picker behavior, handoffs, clipboard export, backups, WSL integration, and launch flow symmetrically. Preserve intentional product-specific differences: command names, data directories, prompts, and environment-variable prefixes. State how parity was verified; explain any one-script-only change.
+Treat `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` as mirrored implementations. Apply changes to picker behavior, handoffs, clipboard export, backups, WSL integration, and launch flow symmetrically. Preserve intentional product-specific differences: command names, data directories, storage formats (JSONL transcripts vs. `opencode.db`), prompts, and environment-variable prefixes. State how parity was verified; explain any one-script-only change.
 
 ## Build, Test, and Development Commands
 
@@ -24,6 +26,7 @@ There is no compilation step. Run scripts from Windows PowerShell because they d
 ```powershell
 powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-codex.ps1
 powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-claude.ps1
+powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-opencode.ps1
 powershell.exe -ExecutionPolicy Bypass -File .\fixclip.ps1
 ```
 
@@ -35,15 +38,15 @@ $errors = $null
 $errors
 ```
 
-An empty result means parsing succeeded. Functional testing requires Windows, WSL2, Linux `fzf`, and the relevant CLI for the default backend; the windows backend needs Git for Windows, Windows `fzf`, PowerShell 7 and the native CLI instead. Changes to shared paths should keep both backends working. `pandoc` is required only for formatted clipboard export.
+An empty result means parsing succeeded. Functional testing requires Windows, WSL2, Linux `fzf`, and the relevant CLI for the default backend; the windows backend needs Git for Windows, Windows `fzf`, PowerShell 7 and the native CLI instead. OpenCode support additionally needs Python 3 with SQLite. Changes to shared paths should keep both backends working. `pandoc` is required only for formatted clipboard export.
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation in PowerShell blocks. Follow existing PowerShell conventions: `PascalCase` for functions and approved verbs (for example, `ConvertTo-WslPath`), and descriptive `camelCase` for local variables. Keep environment overrides uppercase, such as `CODEX_BACKUP_DIR`. Preserve `$ErrorActionPreference = 'Stop'`, UTF-8 handling, and LF normalization for generated shell scripts. Comment cross-boundary quoting and Windows/WSL path conversions, which are easy to break.
+Use four-space indentation in PowerShell blocks. Follow existing PowerShell conventions: `PascalCase` for functions and approved verbs (for example, `ConvertTo-WslPath`), and descriptive `camelCase` for local variables. Keep environment overrides uppercase, such as `CODEX_BACKUP_DIR`, `OPENCODE_BACKUP_DIR`, and `AGENT_HUB_TOOLS`. Preserve `$ErrorActionPreference = 'Stop'`, UTF-8 handling, and LF normalization for generated shell scripts. Comment cross-boundary quoting and Windows/WSL path conversions, which are easy to break.
 
 ## Testing Guidelines
 
-No automated test suite or coverage target is present. Parser-check every modified `.ps1`, then manually exercise the affected picker action in both session pickers: new session, resume, Alt-C handoff, Alt-F export, multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings.
+No automated test suite or coverage target is present. Parser-check every modified `.ps1`, then manually exercise the affected picker action in all three session pickers: new session, resume, Alt-X/Alt-C/Alt-O handoff, Alt-F export, multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
 
 ## Commit & Pull Request Guidelines
 

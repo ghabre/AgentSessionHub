@@ -10,16 +10,19 @@
 #
 # The top row ("+ New session...") starts a fresh conversation: it opens a folder picker
 # listing the project root itself followed by its immediate subfolders (default C:\G\code,
-# override with $env:CLAUDE_NEW_ROOT), and launches a new session in the folder you pick --
-# `claude` on enter/click, or `codex` on Alt-C.
+# override with $env:CLAUDE_NEW_ROOT or $env:AGENT_HUB_NEW_ROOT), and launches a new session
+# in the folder you pick -- `claude` on enter/click, `codex` on Alt-X, or `opencode` on Alt-O.
 #
-# Alt-C on a session row continues that conversation in CODEX instead, same folder: the
+# Alt-X on a session row continues that conversation in CODEX instead, same folder: the
 # transcript is exported to a chat-only markdown handoff (tool calls, tool output and
 # internal reasoning stripped -- codex re-reads the live files itself) and codex opens
 # with that handoff as its first prompt. This path never invokes Claude Code or its API,
 # so it still works when the Claude quota is exhausted. When earlier handoffs already link
-# the conversation to codex sessions (in either direction), Alt-C first offers to resume
+# the conversation to codex sessions (in either direction), Alt-X first offers to resume
 # the newest of them with only the messages since its last handoff, or to start a new one.
+#
+# Alt-O does the same in OPENCODE: the handoff is written the same way and
+# `opencode --prompt` opens with it (or `opencode --session` resumes a linked one).
 #
 # A Claude session sent to the background continues under a new id; once the continuation
 # has a transcript, the one it left behind is not listed.
@@ -31,12 +34,13 @@
 # in WSL. (Terminal ANSI colour can't be recovered here: a finished session is plain JSON
 # on disk, with no scrollback and no escape codes to convert.)
 #
-# Tab marks a row (fzf multi-select). Mark 2+ session rows and press Enter (or Alt-C) and
-# it does NOT open each: it merges their transcripts into ONE chat-only handoff and starts
-# a single new claude (Enter) or codex (Alt-C) session seeded with it, for one interrelated
-# discussion across the threads. The new session runs in a folder chosen from the marked
-# sessions' own working dirs -- picked automatically when they share one, otherwise a small
-# folder picker among them. Alt-F on 2+ marked rows copies one combined formatted export.
+# Tab marks a row (fzf multi-select). Mark 2+ session rows and press Enter (or Alt-X /
+# Alt-O) and it does NOT open each: it merges their transcripts into ONE chat-only handoff
+# and starts a single new claude (Enter), codex (Alt-X) or opencode (Alt-O) session seeded
+# with it, for one interrelated discussion across the threads. The new session runs in a
+# folder chosen from the marked sessions' own working dirs -- picked automatically when they
+# share one, otherwise a small folder picker among them. Alt-F on 2+ marked rows copies one
+# combined formatted export.
 #
 # On startup it also snapshots the transcripts (~/.claude/projects, plus history.jsonl) to
 # a .tar.gz under .\backups\claude, but only if the newest snapshot is more than 24 hours old, and
@@ -46,9 +50,9 @@
 # Backend: $env:AGENT_HUB_BACKEND = 'wsl' (default) or 'windows'.
 #   wsl     : Claude Code installed INSIDE WSL; the requirements below apply as written.
 #   windows : Claude Code installed natively (data under %USERPROFILE%\.claude). The same
-#             helper scripts run under Git for Windows' bash; fzf, pandoc and codex come
-#             from the Windows PATH, and tabs open in PowerShell 7, whose profile supplies
-#             per-shell tools such as fnm's codex. No WSL is used.
+#             helper scripts run under Git for Windows' bash; fzf, pandoc, Python and the
+#             other CLIs come from the Windows PATH, and tabs open in PowerShell 7, whose
+#             profile supplies per-shell tools such as fnm's codex. No WSL is used.
 #
 # Requirements (wsl backend):
 #   - Windows with WSL2, and Claude Code installed INSIDE WSL (data under ~/.claude).
@@ -57,7 +61,8 @@
 #     mis-parses Windows Terminal mouse input). apt: `sudo apt install fzf`, or grab a
 #     release binary into ~/.local/bin. It's found via the WSL login-shell PATH.
 #   - `claude` reachable from the WSL login shell (bash -lic).
-#   - `codex` likewise, but only if you use the Alt-C handoff.
+#   - `codex` / `opencode` likewise, but only if you use the Alt-X / Alt-O handoff.
+#   - Python 3 with SQLite, but only for the Alt-O handoff links.
 #   - `pandoc` in WSL, but only for the Alt-F clipboard export. apt: `sudo apt install pandoc`.
 #
 # Auto-detected (no per-machine editing needed): the default WSL distro and the fzf path.
@@ -88,6 +93,14 @@ public static class SharedFile {
 $backend = if ($env:AGENT_HUB_BACKEND) { $env:AGENT_HUB_BACKEND.ToLowerInvariant() } else { 'wsl' }
 if ($backend -notin @('wsl', 'windows')) { throw "AGENT_HUB_BACKEND must be 'wsl' or 'windows', not '$backend'" }
 
+$enabledTools = @(if ($env:AGENT_HUB_TOOLS) {
+    $env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+} else {
+    'codex', 'claude', 'opencode'
+})
+$codexEnabled = 'codex' -in $enabledTools
+$opencodeEnabled = 'opencode' -in $enabledTools
+
 # C:\dir\sub -> /mnt/c/dir/sub in WSL, /c/dir/sub in Git Bash. One definition for every
 # Windows path this script hands to the helper scripts (temp dir, new-session root, backup dir).
 function ConvertTo-WslPath($winPath) {
@@ -102,6 +115,12 @@ function ConvertFrom-WslPath($path) {
     return $path
 }
 
+# Keep concurrent picker instances from overwriting each other's list, selection,
+# wrapper, and click-state files when the hub shortcut is opened more than once.
+$tmpWin  = Join-Path $env:TEMP ("recent-claude-{0}" -f $PID)
+New-Item -ItemType Directory -Path $tmpWin -Force | Out-Null
+$tmpWsl  = ConvertTo-WslPath $tmpWin
+
 if ($backend -eq 'wsl') {
     # Default WSL distro: $env:WSL_DISTRO override, else the registered default distro
     # (DefaultDistribution GUID -> DistributionName), else fall back to 'Ubuntu'.
@@ -113,16 +132,43 @@ if ($backend -eq 'wsl') {
         } catch { 'Ubuntu' }
     }
 
-    # Resolve WSL home (username may differ from Windows)
-    $wslUser  = if ($env:WSL_USER) { $env:WSL_USER } else { (wsl -d $distro -- whoami).Trim() }
-    $bashHome = "/home/$wslUser"
-    $claude   = "\\wsl$\$distro\home\$wslUser\.claude"
-    $bashCommand = 'bash'
+    # Resolve the WSL user, fzf path, and OpenCode DB path in one non-interactive sh call
+    # (~200ms) instead of spawning several `bash -lic` login shells (~700-1200ms each).
+    # Written to a script file so wsl.exe never mangles quotes or `$` expansions.
+    $probeShWin = Join-Path $tmpWin 'probe.sh'; $probeShWsl = "$tmpWsl/probe.sh"
+    $probeSh = @'
+#!/bin/sh
+u=${WSL_USER:-$(id -un)}
+h="/home/$u"
+f=$(command -v fzf 2>/dev/null)
+[ -n "$f" ] || f="$h/.local/bin/fzf"
+d="${XDG_DATA_HOME:-$h/.local/share}/opencode"
+if [ -n "$OPENCODE_DB" ]; then
+    case "$OPENCODE_DB" in /*) db="$OPENCODE_DB" ;; *) db="$d/$OPENCODE_DB" ;; esac
+else
+    db="$d/opencode.db"
+fi
+printf '%s\n%s\n%s\n' "$u" "$f" "$db"
+'@ -replace "`r`n","`n"
+    [System.IO.File]::WriteAllText($probeShWin, $probeSh)
+    $probe = @(wsl.exe -d $distro -- sh $probeShWsl 2>$null)
+    $wslUser       = if ($env:WSL_USER) { $env:WSL_USER } elseif ($probe.Count -ge 1 -and $probe[0]) { "$($probe[0])".Trim() } else { (wsl -d $distro -- whoami).Trim() }
+    $bashHome      = "/home/$wslUser"
+    $fzfPath       = if ($probe.Count -ge 2 -and $probe[1]) { "$($probe[1])".Trim() } else { "$bashHome/.local/bin/fzf" }
+    $opencodeDbWsl = if ($probe.Count -ge 3 -and $probe[2]) { "$($probe[2])".Trim() } else { "$bashHome/.local/share/opencode/opencode.db" }
+    $claude        = "\\wsl$\$distro\home\$wslUser\.claude"
+    $bashCommand   = 'bash'
 } else {
     $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
     if (-not (Test-Path $gitBash)) { throw "The windows backend needs Git for Windows: $gitBash not found" }
     $bashHome = ConvertTo-WslPath $HOME
     $claude   = Join-Path $HOME '.claude'
+    $dataBase = if ($env:XDG_DATA_HOME) { ConvertTo-WslPath $env:XDG_DATA_HOME } else { "$bashHome/.local/share" }
+    $opencodeData = "$dataBase/opencode"
+    $opencodeDbWsl = if ($env:OPENCODE_DB) {
+        $dbOverride = if ($env:OPENCODE_DB -match '^[A-Za-z]:\\') { ConvertTo-WslPath $env:OPENCODE_DB } else { $env:OPENCODE_DB -replace '\\','/' }
+        if ($dbOverride.StartsWith('/')) { $dbOverride } else { "$opencodeData/$dbOverride" }
+    } else { "$opencodeData/opencode.db" }
     # Tab commands run in PowerShell, where a bare 'bash' would be WSL's System32 bash.exe.
     $bashCommand = "& '$gitBash'"
     $tabShell = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }
@@ -175,18 +221,7 @@ function Open-WtTab($title, $cwd, $command) {
 # fzf was installed. NOTE: it must be the Linux build, not fzf.exe (see below).
 #
 # The windows backend has no Linux fzf, so it uses fzf.exe from the PATH, through the
-# fzf-win.sh wrapper written below once the temp dir exists.
-if ($backend -eq 'wsl') {
-    $fzfPath = (wsl.exe -d $distro -- bash -lic "command -v fzf 2>/dev/null" 2>$null | Select-Object -Last 1)
-    if ($fzfPath) { $fzfPath = $fzfPath.Trim() }
-    if (-not $fzfPath) { $fzfPath = "/home/$wslUser/.local/bin/fzf" }
-}
-
-# Keep concurrent picker instances from overwriting each other's list, selection,
-# wrapper, and click-state files when the hub shortcut is opened more than once.
-$tmpWin  = Join-Path $env:TEMP ("recent-claude-{0}" -f $PID)
-New-Item -ItemType Directory -Path $tmpWin -Force | Out-Null
-$tmpWsl  = ConvertTo-WslPath $tmpWin
+# fzf-win.sh wrapper written below.
 
 # fzf-win.sh: the windows backend's stand-in for the Linux fzf, used by every picker below.
 # fzf.exe's default full-screen renderer takes mouse input as console records, and the
@@ -239,17 +274,19 @@ $clickBinds = (@"
 
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
-# open in claude, hand the session off to codex, copy it, or hide it from this picker.
+# open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-f', 'alt-h', 'alt-s') -join ','
+$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
-    --expect=alt-c,alt-f,alt-h,alt-s \
+    --expect=$expectKeys \
 $clickBinds
     --prompt='claude sessions> ' --reverse \
-    --header='enter: open | tab: mark | alt-c: codex | alt-f: copy | alt-h: hide | alt-s: show | esc: reload' \
+    --header='$headerActions' \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
@@ -292,8 +329,8 @@ done |
 # --- New-session support -----------------------------------------------------------
 # Root that the folder picker lists (immediate subfolders become new-session choices).
 # Its first row can also create an initialized local Git project under this root.
-# Override with $env:CLAUDE_NEW_ROOT (a Windows path). WSL path derived like $tmpWsl.
-$newRoot    = if ($env:CLAUDE_NEW_ROOT) { $env:CLAUDE_NEW_ROOT } else { 'C:\G\code' }
+# Override with $env:CLAUDE_NEW_ROOT or $env:AGENT_HUB_NEW_ROOT (a Windows path). WSL path derived like $tmpWsl.
+$newRoot    = if ($env:CLAUDE_NEW_ROOT) { $env:CLAUDE_NEW_ROOT } elseif ($env:AGENT_HUB_NEW_ROOT) { $env:AGENT_HUB_NEW_ROOT } else { 'C:\G\code' }
 $newRootWsl = ConvertTo-WslPath $newRoot
 $dirListWin = Join-Path $tmpWin 'dirs.txt'; $dirListWsl = "$tmpWsl/dirs.txt"
 
@@ -306,8 +343,8 @@ find "$newRootWsl" -mindepth 1 -maxdepth 1 -type d -printf '%f\t%p\n' 2>/dev/nul
 [System.IO.File]::WriteAllText($scanDirShWin, $scanDirSh)
 
 # fzfdir.sh: same plumbing and same $clickBinds as fzf.sh, different prompt/header.
-# `$3 is the tool being started ('claude' or 'codex') -- it only ever labels the prompt,
-# so the same picker serves both.
+# `$3 is the tool being started ('claude', 'codex' or 'opencode') -- it only ever labels
+# the prompt, so the same picker serves all three.
 $fzfDirShWin = Join-Path $tmpWin 'fzfdir.sh'; $fzfDirShWsl = "$tmpWsl/fzfdir.sh"
 $fzfDirSh = @"
 #!/bin/bash
@@ -321,13 +358,13 @@ $clickBinds
 [System.IO.File]::WriteAllText($fzfDirShWin, $fzfDirSh)
 # -----------------------------------------------------------------------------------
 
-# --- Codex handoff support ---------------------------------------------------------
-# Alt-C on a row continues that conversation in codex instead of claude, in the same
+# --- Handoff support (Codex & OpenCode) --------------------------------------------
+# Alt-X on a row continues that conversation in codex, Alt-O in opencode, in the same
 # repo/folder. NOTHING here goes through Claude Code: transcripts are plaintext JSONL on
-# disk, the export below is done by this script, and the tab launches codex directly --
+# disk, the export below is done by this script, and the tab launches the target directly --
 # so the handoff still works with the Claude quota exhausted.
 #
-# Handoffs live in the WSL-local /tmp (reachable from Windows via \\wsl$): codex reads it
+# Handoffs live in the WSL-local /tmp (reachable from Windows via \\wsl$): agents read it
 # from inside WSL, and keeping it out of the repo means no stray file to commit. The
 # windows backend uses %TEMP% and hands agents the path with forward slashes, which they
 # read fine and which keeps the 'recent-claude-handoff/<id>-' link pattern identical.
@@ -340,9 +377,9 @@ if ($backend -eq 'wsl') {
 }
 New-Item -ItemType Directory -Path $handoffWin -Force | Out-Null
 
-# codex.sh: the prompt lives in a script file, not in the wt/wsl command line -- wt treats
-# ';' as its own separator and re-quotes nested arguments, which mangles prose. Here the
-# only argument that has to survive is a path.
+# codex.sh / opencode.sh: the prompt lives in a script file, not in the wt/wsl command line --
+# wt treats ';' as its own separator and re-quotes nested arguments, which mangles prose.
+# Here the only argument that has to survive is a path.
 $codexShWin = Join-Path $tmpWin 'codex.sh'; $codexShWsl = "$tmpWsl/codex.sh"
 $codexSh = @"
 #!/bin/bash
@@ -354,6 +391,18 @@ transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
 codex -c tui.fullscreen_transcript=false "[Transitioned from Claude; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($codexShWin, $codexSh)
+
+$opencodeShWin = Join-Path $tmpWin 'opencode.sh'; $opencodeShWsl = "$tmpWsl/opencode.sh"
+$opencodeSh = @"
+#!/bin/bash
+# `$1 = handoff markdown path, `$2 = opencode session to resume with it (none: start a new one).
+if [ -n "`$2" ]; then
+    exec opencode --session "`$2" --prompt "[Continued from Claude] Read `$1 -- the conversation continued in Claude Code after you last saw it. It holds a compact state pack and only the chat messages since then. Tool outputs and quoted file contents may be stale, so re-read live files from disk before relying on them. Tell me what changed and what you plan to do next."
+fi
+transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
+opencode --prompt "[Transitioned from Claude; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
+"@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($opencodeShWin, $opencodeSh)
 
 # links.sh: codex sessions linked to a claude transcript by earlier handoffs -- ones seeded or
 # resumed from its handoff files, and ones whose handoff seeded it. Handoff file names start
@@ -385,29 +434,118 @@ done | sort -rn
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($linksShWin, $linksSh)
 
+# py.sh: run Python 3 in whichever backend is in use. links-opencode.py needs a real
+# SQLite driver; the CLI only lists one project at a time, so the handoff links have to
+# be read from opencode.db directly. Invoked through this wrapper because a .py written
+# from Windows has no guaranteed executable bit or shebang under WSL.
+$pyShWin = Join-Path $tmpWin 'py.sh'; $pyShWsl = "$tmpWsl/py.sh"
+$pySh = @"
+#!/bin/bash
+for p in python3 python; do
+    if command -v "`$p" >/dev/null 2>&1; then exec "`$p" "`$@"; fi
+done
+echo "Python 3 is required for OpenCode handoff links." >&2
+exit 127
+"@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($pyShWin, $pySh)
+
+# links-opencode.py: opencode sessions in opencode.db linked to a claude transcript by earlier handoffs.
+$linksOpenCodePyWin = Join-Path $tmpWin 'links-opencode.py'; $linksOpenCodePyWsl = "$tmpWsl/links-opencode.py"
+$linksOpenCodePy = @'
+import os, re, sqlite3, sys
+
+tr_path = sys.argv[1]
+projects_dir = sys.argv[2]
+db_path = sys.argv[3]
+if not os.path.isfile(db_path):
+    sys.exit(0)
+
+files = [tr_path]
+ids = {os.path.splitext(os.path.basename(tr_path))[0]}
+frontier = set(ids)
+while frontier and os.path.isdir(projects_dir):
+    pat = re.compile(r'"continuedInSessionId":"(' + '|'.join(re.escape(x) for x in frontier) + r')"')
+    new_frontier = set()
+    for root, _, fnames in os.walk(projects_dir):
+        if 'subagents' in root.split(os.sep):
+            continue
+        for fn in fnames:
+            if not fn.endswith('.jsonl'):
+                continue
+            fp = os.path.join(root, fn)
+            if fp in files:
+                continue
+            try:
+                with open(fp, 'r', encoding='utf-8', errors='ignore') as f:
+                    if pat.search(f.read()):
+                        cid = os.path.splitext(fn)[0]
+                        if cid not in ids:
+                            ids.add(cid)
+                            new_frontier.add(cid)
+                            files.append(fp)
+            except OSError:
+                pass
+    frontier = new_frontier
+
+id_group = '|'.join(re.escape(x) for x in ids)
+cl_pat = re.compile(rf'recent-claude-handoff/(?:{id_group})-(\d{{8}}-\d{{6}})')
+inh_pat = re.compile(r'inherited title: ([^\]]*)')
+
+oc_ids = set()
+conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+for (sid,) in conn.execute("SELECT DISTINCT session_id FROM session_message WHERE data LIKE '%recent-claude-handoff/%'"):
+    oc_ids.add(sid)
+
+rows = []
+for sid in oc_ids:
+    row = conn.execute("SELECT id, directory, title, time_updated, parent_id, time_archived FROM session_v2 WHERE id = ?", (sid,)).fetchone()
+    if not row or row[4] is not None or row[5] is not None:
+        continue
+    stamps = []
+    inh_title = ""
+    for (data,) in conn.execute("SELECT data FROM session_message WHERE session_id = ? ORDER BY seq ASC", (sid,)):
+        stamps.extend(cl_pat.findall(data))
+        if not inh_title:
+            m = inh_pat.search(data)
+            if m:
+                inh_title = m.group(1)
+    if not stamps:
+        continue
+    title = (row[2] or inh_title or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
+    mtime = int(row[3] // 1000)
+    rows.append((mtime, row[0], row[1] or "", max(stamps), title))
+
+rows.sort(key=lambda r: r[0], reverse=True)
+for r in rows:
+    print(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}")
+'@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($linksOpenCodePyWin, $linksOpenCodePy)
+
 $linkPickShWin = Join-Path $tmpWin 'link-pick.sh'; $linkPickShWsl = "$tmpWsl/link-pick.sh"
 $linkPickSh = @"
 #!/bin/bash
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
 $clickBinds
-    --prompt='continue in codex> ' --reverse \
-    --header='resume a codex session linked by earlier handoffs, or start a new one | esc: cancel' \
+    --prompt="continue in `$3> " --reverse \
+    --header="resume a `$3 session linked by earlier handoffs, or start a new one | esc: cancel" \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($linkPickShWin, $linkPickSh)
 
-# combo.sh: seed a BRAND-NEW session (claude or codex) with a handoff merged from several
+# combo.sh: seed a BRAND-NEW session (claude, codex, or opencode) with a handoff merged from several
 # past sessions -- the "combine" flow. Same reason as codex.sh for living in a script file:
 # the only argument that must survive wt/wsl re-quoting is a path; the long prompt is baked
-# in here. `$1 = tool (claude|codex), `$2 = combined handoff markdown path.
+# in here. `$1 = tool (claude|codex|opencode), `$2 = combined handoff markdown path.
 $comboShWin = Join-Path $tmpWin 'combo.sh'; $comboShWsl = "$tmpWsl/combo.sh"
 $comboSh = @"
 #!/bin/bash
-# `$1 = tool (claude|codex), `$2 = combined handoff markdown path.
+# `$1 = tool (claude|codex|opencode), `$2 = combined handoff markdown path.
 prompt="Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
 if [ "`$1" = codex ]; then
     codex -c tui.fullscreen_transcript=false "`$prompt"
+elif [ "`$1" = opencode ]; then
+    opencode --prompt "`$prompt"
 else
     claude "`$prompt"
 fi
@@ -686,8 +824,9 @@ function Get-Sessions($visibility = 'visible') {
 # screen (no rescan, no reshuffle). Esc reloads the whole script so code changes are picked up; close the
 # window to quit. Scan up front, then restart the script when Esc asks for it.
 # Synthetic first row: picking it (id __NEW__) triggers the folder picker below --
-# with claude on enter/click, or codex on alt-c, same as the session rows.
-$newRow = "+ New session (choose folder)...  [enter: claude | alt-c: codex]`t__NEW__`t`t"
+# with claude on enter/click, or a transfer target on its hotkey, same as the session rows.
+$newTargets = @($(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' })) -join ' | '
+$newRow = if ($newTargets) { "+ New session (choose folder)...  [enter: claude | $newTargets]`t__NEW__`t`t" } else { "+ New session (choose folder)...  [enter: claude]`t__NEW__`t`t" }
 
 function Restart-Script {
     $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
@@ -708,8 +847,8 @@ function Update-List {
 
 # Folder picker for a brand-new session: list $newRoot first, then its subfolders, and
 # open the chosen one as a fresh session (no resume) in its own Windows Terminal tab.
-# $tool ('claude' or 'codex') is the ONLY difference between the two flows -- it labels
-# the picker and is the command the tab runs -- so both share this one function.
+# $tool ('claude', 'codex', 'opencode') is the ONLY difference between the flows -- it labels
+# the picker and is the command the tab runs -- so all share this one function.
 function Invoke-NewSession($tool) {
     $dirs = Invoke-Bash $scanDirShWsl
     $rootName = Split-Path ($newRoot.TrimEnd('\')) -Leaf
@@ -931,24 +1070,28 @@ function New-Handoff($transcript, $id, $cwd, $title, $since) {
     return "$handoffWsl/$fileName"
 }
 
-# Where Alt-C continues: a codex session linked by earlier handoffs (newest first, so Enter
-# resumes it) or a new one. Returns @{ Id; Cwd; Title; Since } -- Id $null for a new
-# session -- or $null when cancelled.
-function Select-HandoffTarget($transcript) {
+# Where a transfer hotkey continues: a target session linked by earlier handoffs (newest
+# first, so Enter resumes it) or a new one. Returns @{ Id; Cwd; Title; Since } -- Id $null
+# for a new session -- or $null when cancelled.
+function Select-HandoffTarget($transcript, $tool) {
     $linuxTr = if ($backend -eq 'wsl') { $transcript.Substring("\\wsl$\$distro".Length) -replace '\\','/' } else { ConvertTo-WslPath $transcript }
     # Native Windows cwds arrive JSON-escaped (C:\\dir).
-    $links = @(Invoke-Bash $linksShWsl $linuxTr | Where-Object { $_ } | ForEach-Object { $_ -replace '\\\\','\' })
+    $links = @($(if ($tool -eq 'codex') {
+        Invoke-Bash $linksShWsl $linuxTr
+    } else {
+        Invoke-Bash $pyShWsl $linksOpenCodePyWsl $linuxTr "$bashHome/.claude/projects" $opencodeDbWsl
+    }) | Where-Object { $_ } | ForEach-Object { $_ -replace '\\\\','\' })
     $new = [pscustomobject]@{ Id = $null }
     if (-not $links) { return $new }
     $rows = @(foreach ($link in $links) {
         $mtime, $linkId, $linkCwd, $stamp, $linkTitle = $link -split "`t"
         $folder = (($linkCwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
         $age = Format-Age ([DateTimeOffset]::FromUnixTimeSeconds([long]$mtime).LocalDateTime)
-        "resume codex: {0} - {1} - {2} ago [..-{3}]`t{4}" -f $folder, $(if ($linkTitle) { $linkTitle } else { 'untitled' }), $age, ($linkId -split '-')[-1], $link
-    }) + "+ new codex session with the full handoff`t__NEW__"
+        "resume ${tool}: {0} - {1} - {2} ago [..-{3}]`t{4}" -f $folder, $(if ($linkTitle) { $linkTitle } else { 'untitled' }), $age, ($linkId -split '-')[-1], $link
+    }) + "+ new $tool session with the full handoff`t__NEW__"
     [System.IO.File]::WriteAllLines($dirListWin, [string[]]$rows)
     Remove-Item $pickWin -ErrorAction SilentlyContinue
-    Invoke-Bash $linkPickShWsl $dirListWsl $pickWsl
+    Invoke-Bash $linkPickShWsl $dirListWsl $pickWsl $tool
     $p = @(if (Test-Path $pickWin) { Get-Content $pickWin | Where-Object { $_ } })
     if (-not $p) { return $null }
     $link = $p[0].Substring($p[0].IndexOf("`t") + 1)
@@ -959,26 +1102,31 @@ function Select-HandoffTarget($transcript) {
     return [pscustomobject]@{ Id = $linkId; Cwd = $linkCwd; Title = $linkTitle; Since = $since }
 }
 
-# Alt-C: continue this conversation in codex, seeded with the handoff -- a new codex session
-# in the same folder, or a linked one resumed in its own folder with the messages since.
-function Invoke-Codex($id, $cwd, $transcript, $title) {
+# A transfer hotkey: continue this conversation in the target, seeded with the handoff -- a new
+# session in the same folder, or a linked one resumed in its own folder with the messages since.
+function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
     if (-not $transcript -or -not (Test-Path $transcript)) {
         Write-Host "No transcript found for $id"; Start-Sleep -Milliseconds 900; return
     }
-    $target = Select-HandoffTarget $transcript
+    $target = Select-HandoffTarget $transcript $tool
     if (-not $target) { return }
-    Write-Host "Exporting chat for codex..." -NoNewline
+    Write-Host "Exporting chat for $tool..." -NoNewline
     $handoff = New-Handoff $transcript $id $cwd $title $target.Since
     Write-Host "`r                           `r" -NoNewline
     if ($target.Id) {
         $linkTitle = if ($target.Title) { $target.Title } else { $target.Id }
-        $command = if ($handoff) { "$bashCommand $codexShWsl $handoff $($target.Id)" } else { "codex -c tui.fullscreen_transcript=false resume $($target.Id)" }
-        Open-WtTab "codex: $linkTitle" $target.Cwd $command
+        $command = if ($tool -eq 'codex') {
+            if ($handoff) { "$bashCommand $codexShWsl $handoff $($target.Id)" } else { "codex -c tui.fullscreen_transcript=false resume $($target.Id)" }
+        } else {
+            if ($handoff) { "$bashCommand $opencodeShWsl $handoff $($target.Id)" } else { "opencode --session $($target.Id)" }
+        }
+        Open-WtTab "${tool}: $linkTitle" $target.Cwd $command
         return
     }
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
-    $tabTitle = if ($title) { "codex: $title" } else { "codex: $id" }
-    Open-WtTab $tabTitle $cwd "$bashCommand $codexShWsl $handoff"
+    $tabTitle = if ($title) { "${tool}: $title" } else { "${tool}: $id" }
+    $script = if ($tool -eq 'codex') { $codexShWsl } else { $opencodeShWsl }
+    Open-WtTab $tabTitle $cwd "$bashCommand $script $handoff"
 }
 
 # --- Alt-F: formatted chat export to the clipboard ---------------------------------
@@ -1327,14 +1475,14 @@ while ($true) {
         continue
     }
 
-    # Open each pick as its own WSL tab in the correct folder, resumed.
+    # Open each pick as its own tab in the correct folder, resumed.
     # bash -lic loads the login profile so PATH includes claude.
-    # For the two keys that launch something, the pressed key chooses the tool once, here;
+    # For the keys that launch something, the pressed key chooses the tool once, here;
     # everything below just uses $tool. (Alt-F launches nothing and ignores it.)
-    $tool = if ($key -eq 'alt-c') { 'codex' } else { 'claude' }
+    $tool = if ($key -eq 'alt-x') { 'codex' } elseif ($key -eq 'alt-o') { 'opencode' } else { 'claude' }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
-    # transcripts into one handoff and seed a single new session (enter/alt-c), or one
+    # transcripts into one handoff and seed a single new session (enter/transfer key), or one
     # combined clipboard copy (alt-f). The __NEW__ row can't be combined, so drop it first.
     # A /cd since the scan moved the transcript into the new folder's project dir: find it again
     # and re-read its relocation so picks follow the move without an Esc reload.
@@ -1361,7 +1509,7 @@ while ($true) {
             Invoke-CopyExport $it.Id $it.Cwd $it.Tr; continue
         }
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
-        if ($tool -eq 'codex')    { Invoke-Codex $it.Id $it.Cwd $it.Tr $it.Title; continue }  # resume in codex
+        if ($tool -ne 'claude')   { Invoke-Handoff $tool $it.Id $it.Cwd $it.Tr $it.Title; continue }
         $tabTitle = if ($it.Title) { "claude: $($it.Title)" } else { "claude: $($it.Id)" }
         Open-WtTab $tabTitle $it.Cwd "claude --resume $($it.Id)"
     }
