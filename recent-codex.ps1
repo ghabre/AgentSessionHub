@@ -154,7 +154,6 @@ printf '%s\n%s\n%s\n' "$u" "$f" "$db"
     $fzfPath       = if ($probe.Count -ge 2 -and $probe[1]) { "$($probe[1])".Trim() } else { "$bashHome/.local/bin/fzf" }
     $opencodeDbWsl = if ($probe.Count -ge 3 -and $probe[2]) { "$($probe[2])".Trim() } else { "$bashHome/.local/share/opencode/opencode.db" }
     $codex         = "\\wsl$\$distro\home\$wslUser\.codex"
-    $bashCommand   = 'bash'
 } else {
     $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
     if (-not (Test-Path $gitBash)) { throw "The windows backend needs Git for Windows: $gitBash not found" }
@@ -167,7 +166,6 @@ printf '%s\n%s\n%s\n' "$u" "$f" "$db"
         if ($dbOverride.StartsWith('/')) { $dbOverride } else { "$opencodeData/$dbOverride" }
     } else { "$opencodeData/opencode.db" }
     # Tab commands run in PowerShell, where a bare 'bash' would be WSL's System32 bash.exe.
-    $bashCommand = "& '$gitBash'"
     $tabShell = if (Get-Command pwsh.exe -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }
     # The title helper starts codex itself. Node version managers such as fnm put codex on a
     # per-shell PATH that this window may lack, so fall back to fnm's default alias.
@@ -179,6 +177,18 @@ printf '%s\n%s\n%s\n' "$u" "$f" "$db"
 # console stays attached (see the fzf notes below).
 function Invoke-Bash {
     if ($backend -eq 'wsl') { wsl.exe -d $distro -- bash @args } else { & $gitBash @args }
+}
+
+# Commands run in Bash under WSL and PowerShell on Windows; each needs its own
+# single-quote escaping before wt.exe receives the complete command string.
+function New-BashCommand([string[]]$arguments) {
+    $commandArgs = if ($backend -eq 'windows') { @($gitBash) + $arguments } else { $arguments }
+    $quoted = foreach ($argument in $commandArgs) {
+        $escaped = if ($backend -eq 'wsl') { $argument.Replace("'", "'\''") } else { $argument.Replace("'", "''") }
+        "'$escaped'"
+    }
+    $prefix = if ($backend -eq 'wsl') { 'bash ' } else { '& ' }
+    $prefix + ($quoted -join ' ')
 }
 
 function Invoke-Git {
@@ -1227,9 +1237,9 @@ function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
     if ($target.Id) {
         $linkTitle = if ($target.Title) { $target.Title } else { $target.Id }
         $command = if ($tool -eq 'claude') {
-            if ($handoff) { "$bashCommand $claudeShWsl $handoff $($target.Id)" } else { "claude --resume $($target.Id)" }
+            if ($handoff) { (New-BashCommand @($claudeShWsl, $handoff, $target.Id)) } else { "claude --resume $($target.Id)" }
         } else {
-            if ($handoff) { "$bashCommand $opencodeShWsl $handoff $($target.Id)" } else { "opencode --session $($target.Id)" }
+            if ($handoff) { (New-BashCommand @($opencodeShWsl, $handoff, $target.Id)) } else { "opencode --session $($target.Id)" }
         }
         Open-WtTab "${tool}: $linkTitle" $target.Cwd $command
         return
@@ -1237,7 +1247,7 @@ function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
     if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
     $tabTitle = if ($title) { "${tool}: $title" } else { "${tool}: $id" }
     $script = if ($tool -eq 'claude') { $claudeShWsl } else { $opencodeShWsl }
-    Open-WtTab $tabTitle $cwd "$bashCommand $script $handoff"
+    Open-WtTab $tabTitle $cwd (New-BashCommand @($script, $handoff))
 }
 
 # --- Alt-F: formatted chat export to the clipboard ---------------------------------
@@ -1518,7 +1528,7 @@ function Invoke-CombineSession($items, $tool) {
     $handoff = New-CombinedHandoff $items $cwd
     Write-Host "`r                              `r" -NoNewline
     if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    Open-WtTab ("{0}: combined x{1}" -f $tool, $items.Count) $cwd "$bashCommand $comboShWsl $tool $handoff"
+    Open-WtTab ("{0}: combined x{1}" -f $tool, $items.Count) $cwd (New-BashCommand @($comboShWsl, $tool, $handoff))
 }
 
 # alt-f on 2+ marked rows: one combined formatted copy to the clipboard (opens nothing).
