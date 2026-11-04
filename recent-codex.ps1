@@ -536,10 +536,18 @@ base = os.path.splitext(os.path.basename(tr_path))[0]
 match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$', base)
 source_id = match.group(1) if match else base
 stamp_pat = re.compile(rf'recent-codex-handoff/{re.escape(source_id)}-(\d{{8}}-\d{{6}})')
+oc_pat = re.compile(r'recent-opencode-handoff/(ses_[A-Za-z0-9]+)-')
 title_pat = re.compile(r'inherited title: ([^\]]*)')
 
+seeded_from_oc = set()
+try:
+    with open(tr_path, 'r', encoding='utf-8', errors='ignore') as f:
+        seeded_from_oc.update(oc_pat.findall(f.read()))
+except OSError:
+    pass
+
 conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-candidates = {sid for (sid,) in conn.execute(
+candidates = set(seeded_from_oc) | {sid for (sid,) in conn.execute(
     "SELECT DISTINCT session_id FROM session_message WHERE data LIKE ?",
     (f'%recent-codex-handoff/{source_id}-%',))}
 
@@ -556,10 +564,10 @@ for sid in candidates:
             m = title_pat.search(data)
             if m:
                 inherited = m.group(1)
-    if not stamps:
+    if not stamps and sid not in seeded_from_oc:
         continue
     title = (row[2] or inherited or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
-    rows.append((int(row[3] // 1000), row[0], row[1] or "", max(stamps), title))
+    rows.append((int(row[3] // 1000), row[0], row[1] or "", max(stamps) if stamps else "", title))
 
 rows.sort(key=lambda r: r[0], reverse=True)
 for r in rows:
@@ -877,8 +885,8 @@ function Get-Sessions($visibility = 'visible') {
                         $text = Get-MessageText $d.payload
                         if ($text -and -not (Test-InjectedUserText $text)) {
                             $fallback = Get-TitleCandidate $text
-                            if ($fallback -match '^\[Transitioned from Claude; inherited title: (.*?)\]') {
-                                $transitionSource = 'Claude'; $transitionTitle = $Matches[1]
+                            if ($fallback -match '^\[Transitioned from (Claude|OpenCode); inherited title: (.*?)\]') {
+                                $transitionSource = $Matches[1]; $transitionTitle = $Matches[2]
                             }
                         }
                     }
