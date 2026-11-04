@@ -47,11 +47,11 @@ set "tools=%AGENT_HUB_TOOLS%"
 if not defined tools set "tools=codex,claude,opencode"
 set "tools=,%tools: =%,"
 set "tabs="
-if not "%tools:,codex,=%"=="%tools%" set "tabs=new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1""
-if not "%tools:,claude,=%"=="%tools%" (
+if /i not "%tools:,codex,=%"=="%tools%" set "tabs=new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1""
+if /i not "%tools:,claude,=%"=="%tools%" (
     if defined tabs (set "tabs=%tabs% ; new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"") else set "tabs=new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1""
 )
-if not "%tools:,opencode,=%"=="%tools%" (
+if /i not "%tools:,opencode,=%"=="%tools%" (
     if defined tabs (set "tabs=%tabs% ; new-tab --title "OpenCode" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-opencode.ps1"") else set "tabs=new-tab --title "OpenCode" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-opencode.ps1""
 )
 if not defined tabs exit /b 1
