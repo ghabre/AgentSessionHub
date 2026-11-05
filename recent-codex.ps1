@@ -13,31 +13,14 @@
 # override with $env:CODEX_NEW_ROOT or $env:AGENT_HUB_NEW_ROOT), and launches a new session
 # in the folder you pick -- `codex` on enter/click, `claude` on Alt-C, or `opencode` on Alt-O.
 #
-# Alt-C on a session row ports that conversation to Claude instead, same folder: the
-# transcript is exported to a chat-only markdown handoff (tool calls, tool output and
-# internal reasoning stripped -- Claude re-reads the live files itself) and claude opens
-# with that handoff as its first prompt. Normal Enter resumes the saved Codex session.
-# When earlier handoffs already link the conversation to Claude sessions (in either
-# direction), Alt-C first offers to resume the newest of them with only the messages since
-# its last handoff, or to start a new one.
-#
-# Alt-O does the same in OPENCODE: the handoff is written the same way and
-# `opencode --prompt` opens with it (or `opencode --session` resumes a linked one).
-#
-# Alt-F on a session row copies that conversation to the clipboard, formatted: the same
-# chat-only export, rendered to HTML (monospace, colour-coded speaker labels) and put on
-# the clipboard alongside the markdown as a plain-text fallback -- so Word/Outlook/Slack
-# paste it formatted while a plain textarea gets the markdown. Opens nothing. Needs pandoc
-# in WSL. (Terminal ANSI colour can't be recovered here: a finished session is plain JSON
-# on disk, with no scrollback and no escape codes to convert.)
-#
-# Tab marks a row (fzf multi-select). Mark 2+ session rows and press Enter (or Alt-C /
-# Alt-O) and it does NOT open each: it merges their transcripts into ONE chat-only handoff
-# and starts a single new codex (Enter), claude (Alt-C) or opencode (Alt-O) session seeded
-# with it, for one interrelated discussion across the threads. The new session runs in a
-# folder chosen from the marked sessions' own working dirs -- picked automatically when they
-# share one, otherwise a small folder picker among them. Alt-F on 2+ marked rows copies one
-# combined formatted export.
+# Transfer hotkeys resume a unique linked destination automatically, importing only
+# unseen messages and tool notes. Multiple branches require a destination choice.
+# A repeated transfer with no new material resumes without adding a prompt.
+# Tab marks multiple sessions; Enter or a transfer key continues their combined
+# conversation, reusing the existing result when known. Alt-F copies one or more
+# selected chats as formatted HTML plus markdown (requires pandoc).
+# Transfer state and immutable payloads live under %LOCALAPPDATA%\AgentSessionHub,
+# separately for each backend/distro. Keep this directory to preserve synchronization.
 #
 # On startup it also snapshots the transcripts (~/.codex/sessions, session_index.jsonl,
 # plus history.jsonl) to a .tar.gz under .\backups\codex, but only if the newest snapshot is
@@ -60,7 +43,7 @@
 #     release binary into ~/.local/bin. It's found via the WSL login-shell PATH.
 #   - `codex` reachable from the WSL login shell (bash -lic).
 #   - `claude` / `opencode` likewise, but only if you use the Alt-C / Alt-O handoff.
-#   - Python 3 with SQLite, but only for the Alt-O handoff links.
+#   - Python 3.8+ with SQLite for conversation handoffs and combining.
 #   - `pandoc` in WSL, but only for the Alt-F clipboard export. apt: `sudo apt install pandoc`.
 #
 # Auto-detected (no per-machine editing needed): the default WSL distro and the fzf path.
@@ -216,6 +199,9 @@ function Open-WtTab($title, $cwd, $command) {
     }
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
 }
+
+$hubTool = 'codex'
+. (Join-Path $PSScriptRoot 'handoff-sync.ps1')
 
 # Use the LINUX fzf inside WSL, not fzf.exe: the Windows build mis-parses Windows
 # Terminal mouse sequences (wheel scrolls arrive as left-clicks), which made scrolling
@@ -469,182 +455,6 @@ $clickBinds
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfDirShWin, $fzfDirSh)
-# -----------------------------------------------------------------------------------
-
-# --- Claude handoff support --------------------------------------------------------
-# Alt-C on a row ports that Codex conversation to Claude in the same repo/folder.
-# The export is local-only from Codex's plaintext JSONL transcript, then the tab launches
-# claude directly with the handoff as the first prompt.
-#
-# Handoffs live in the WSL-local /tmp (reachable from Windows via \\wsl$): claude reads it
-# from inside WSL, and keeping it out of the repo means no stray file to commit. The
-# windows backend uses %TEMP% and hands agents the path with forward slashes, which they
-# read fine and which keeps the 'recent-codex-handoff/<id>-' link pattern identical.
-if ($backend -eq 'wsl') {
-    $handoffWsl = '/tmp/recent-codex-handoff'
-    $handoffWin = "\\wsl$\$distro\tmp\recent-codex-handoff"
-} else {
-    $handoffWin = Join-Path $env:TEMP 'recent-codex-handoff'
-    $handoffWsl = $handoffWin -replace '\\','/'
-}
-New-Item -ItemType Directory -Path $handoffWin -Force | Out-Null
-
-# claude.sh: the prompt lives in a script file, not in the wt/wsl command line -- wt treats
-# ';' as its own separator and re-quotes nested arguments, which mangles prose. Here the
-# only argument that has to survive is a path.
-$claudeShWin = Join-Path $tmpWin 'claude.sh'; $claudeShWsl = "$tmpWsl/claude.sh"
-$claudeSh = @"
-#!/bin/bash
-# `$1 = handoff markdown path, `$2 = claude session to resume with it (none: start a new one).
-if [ -n "`$2" ]; then
-    exec claude --resume "`$2" "[Continued from Codex] Read `$1 -- the conversation continued in Codex after you last saw it. It holds a compact state pack and only the chat messages since then. Tool outputs and quoted file contents may be stale, so re-read live files from disk before relying on them. Tell me what changed and what you plan to do next."
-fi
-transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
-claude "[Transitioned from Codex; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($claudeShWin, $claudeSh)
-
-$opencodeShWin = Join-Path $tmpWin 'opencode.sh'; $opencodeShWsl = "$tmpWsl/opencode.sh"
-$opencodeSh = @"
-#!/bin/bash
-# `$1 = handoff markdown path, `$2 = opencode session to resume with it (none: start a new one).
-if [ -n "`$2" ]; then
-    exec opencode --session "`$2" --prompt "[Continued from Codex] Read `$1 -- the conversation continued in Codex after you last saw it. It holds a compact state pack and only the chat messages since then. Tool outputs and quoted file contents may be stale, so re-read live files from disk before relying on them. Tell me what changed and what you plan to do next."
-fi
-transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
-opencode --prompt "[Transitioned from Codex; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($opencodeShWin, $opencodeSh)
-
-# py.sh: run Python 3 in whichever backend is in use. links-opencode.py needs a real
-# SQLite driver; the CLI only lists one project at a time, so the handoff links have to
-# be read from opencode.db directly. Invoked through this wrapper because a .py written
-# from Windows has no guaranteed executable bit or shebang under WSL.
-$pyShWin = Join-Path $tmpWin 'py.sh'; $pyShWsl = "$tmpWsl/py.sh"
-$pySh = @"
-#!/bin/bash
-for p in python3 python; do
-    if command -v "`$p" >/dev/null 2>&1; then exec "`$p" "`$@"; fi
-done
-echo "Python 3 is required for OpenCode handoff links." >&2
-exit 127
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($pyShWin, $pySh)
-
-# links-opencode.py: OpenCode sessions linked to this Codex transcript by earlier handoffs.
-$linksOpenCodePyWin = Join-Path $tmpWin 'links-opencode.py'; $linksOpenCodePyWsl = "$tmpWsl/links-opencode.py"
-$linksOpenCodePy = @'
-import os, re, sqlite3, sys
-
-tr_path = sys.argv[1]
-db_path = sys.argv[2]
-if not os.path.isfile(db_path):
-    sys.exit(0)
-
-base = os.path.splitext(os.path.basename(tr_path))[0]
-match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$', base)
-source_id = match.group(1) if match else base
-stamp_pat = re.compile(rf'recent-codex-handoff/{re.escape(source_id)}-(\d{{8}}-\d{{6}})')
-oc_pat = re.compile(r'recent-opencode-handoff/(ses_[A-Za-z0-9]+)-')
-title_pat = re.compile(r'inherited title: ([^\]]*)')
-
-seeded_from_oc = set()
-try:
-    with open(tr_path, 'r', encoding='utf-8', errors='ignore') as f:
-        seeded_from_oc.update(oc_pat.findall(f.read()))
-except OSError:
-    pass
-
-conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-candidates = set(seeded_from_oc) | {sid for (sid,) in conn.execute(
-    "SELECT DISTINCT session_id FROM session_message WHERE data LIKE ?",
-    (f'%recent-codex-handoff/{source_id}-%',))}
-
-rows = []
-for sid in candidates:
-    row = conn.execute("SELECT id, directory, title, time_updated, parent_id, time_archived FROM session_v2 WHERE id = ?", (sid,)).fetchone()
-    if not row or row[4] is not None or row[5] is not None:
-        continue
-    stamps = []
-    inherited = ""
-    for (data,) in conn.execute("SELECT data FROM session_message WHERE session_id = ? ORDER BY seq ASC", (sid,)):
-        stamps.extend(stamp_pat.findall(data))
-        if not inherited:
-            m = title_pat.search(data)
-            if m:
-                inherited = m.group(1)
-    if not stamps and sid not in seeded_from_oc:
-        continue
-    title = (row[2] or inherited or "").replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
-    rows.append((int(row[3] // 1000), row[0], row[1] or "", max(stamps) if stamps else "", title))
-
-rows.sort(key=lambda r: r[0], reverse=True)
-for r in rows:
-    print(f"{r[0]}\t{r[1]}\t{r[2]}\t{r[3]}\t{r[4]}")
-'@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($linksOpenCodePyWin, $linksOpenCodePy)
-
-# links.sh: claude sessions linked to a codex transcript by earlier handoffs -- ones seeded or
-# resumed from its handoff files, and ones whose handoff seeded it. Handoff file names start
-# with the source session id and end with the export time, so the transcripts alone hold the
-# links and the newest export stamp tells which messages the claude side has already seen.
-# Emits "mtime<TAB>id<TAB>cwd<TAB>last-export-stamp<TAB>title", newest first.
-$linksShWin = Join-Path $tmpWin 'links.sh'; $linksShWsl = "$tmpWsl/links.sh"
-$linksSh = @"
-#!/bin/bash
-# `$1 = codex transcript (Linux path)
-projects="$bashHome/.claude/projects"
-id=`$(basename "`$1" .jsonl | grep -aoE '[0-9a-f-]{36}`$')
-{
-    grep -aohE 'recent-claude-handoff/[0-9a-f-]{36}-' "`$1" | cut -c23-58 | sort -u |
-        while read -r cid; do find "`$projects" -name "`$cid.jsonl" -not -path '*/subagents/*'; done
-    grep -arlE --include='*.jsonl' "recent-codex-handoff/`$id-" "`$projects" | grep -v '/subagents/'
-} | sort -u | while read -r f; do
-    stamp=`$(grep -aohE "recent-codex-handoff/`$id-[0-9]{8}-[0-9]{6}" "`$f" | grep -aoE '[0-9]{8}-[0-9]{6}`$' | sort | tail -n 1)
-    # A backgrounded Claude session continues under a new id: follow continued-in records to the live one.
-    while next=`$(grep -am1 -oE '"continuedInSessionId":"[0-9a-f-]{36}"' "`$f" | cut -d'"' -f4); [ -n "`$next" ] && [ -f "`$(dirname "`$f")/`$next.jsonl" ]; do
-        f="`$(dirname "`$f")/`$next.jsonl"
-    done
-    title=`$(grep -aoE '"customTitle":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
-    [ -n "`$title" ] || title=`$(grep -aoE '"aiTitle":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
-    # /cd moves a Claude session permanently: the last relocatedCwd wins over the starting cwd.
-    cwd=`$(grep -aoE '"relocatedCwd":"[^"]*"' "`$f" | tail -n 1 | cut -d'"' -f4)
-    [ -n "`$cwd" ] || cwd=`$(grep -am1 -oE '"cwd":"[^"]*"' "`$f" | cut -d'"' -f4)
-    printf '%s\t%s\t%s\t%s\t%s\n' "`$(stat -c %Y "`$f")" "`$(basename "`$f" .jsonl)" "`$cwd" "`$stamp" "`$title"
-done | sort -t`$'\t' -k2,2 -k4,4r | awk -F'\t' '!seen[`$2]++' | sort -rn
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($linksShWin, $linksSh)
-
-$linkPickShWin = Join-Path $tmpWin 'link-pick.sh'; $linkPickShWsl = "$tmpWsl/link-pick.sh"
-$linkPickSh = @"
-#!/bin/bash
-tr -d '\r' < "`$1" | "$fzfPath" \
-    --with-nth=1 --delimiter=`$'\t' \
-$clickBinds
-    --prompt="continue in `$3> " --reverse \
-    --header="resume a `$3 session linked by earlier handoffs, or start a new one | esc: cancel" \
-    > "`$2"
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($linkPickShWin, $linkPickSh)
-
-# combo.sh: seed a BRAND-NEW session (codex or claude) with a handoff merged from several
-# past sessions -- the "combine" flow. Same reason as claude.sh for living in a script file:
-# the only argument that must survive wt/wsl re-quoting is a path; the long prompt is baked
-# in here. `$1 = tool (codex|claude), `$2 = combined handoff markdown path.
-$comboShWin = Join-Path $tmpWin 'combo.sh'; $comboShWsl = "$tmpWsl/combo.sh"
-$comboSh = @"
-#!/bin/bash
-# `$1 = tool (codex|claude|opencode), `$2 = combined handoff markdown path.
-prompt="Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Each # Thread section starts with a compact state pack, then that thread transcript. Reconstruct the related work across all threads first: current objectives, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcripts for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by summarising each thread, how they connect, and what you plan to do next."
-if [ "`$1" = codex ]; then
-    codex -c tui.fullscreen_transcript=false "`$prompt"
-elif [ "`$1" = opencode ]; then
-    opencode --prompt "`$prompt"
-else
-    claude "`$prompt"
-fi
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($comboShWin, $comboSh)
 # -----------------------------------------------------------------------------------
 
 # --- Transcript backup -------------------------------------------------------------
@@ -1035,9 +845,7 @@ function Test-InjectedUserText($text) {
 
 # Read a transcript as an ordered list of chat messages: @{ Role='User'|'Codex'; Body=... }.
 #
-# The ONE place that decides what "the chat" means -- both the Claude handoff and the
-# formatted clipboard export render whatever this returns, so the two can never drift
-# apart on what counts as a message.
+# Chat extraction for formatted clipboard exports. Transfers use handoff-sync.ps1.
 #
 # What survives: user messages and Codex user-facing messages, in order. What's dropped,
 # deliberately: tool calls/outputs, reasoning, token counters, task state, and the context
@@ -1047,14 +855,12 @@ function Test-InjectedUserText($text) {
 # Read from `response_item` messages, not the `event_msg` chat events: those events were
 # renamed (`user_message`/`agent_message` -> `item_completed`) in newer Codex builds, while
 # response_item messages are the same shape in old and new transcripts.
-# $since keeps only messages written after it (the delta for a resumed handoff).
-function Get-ChatMessages($transcript, $since) {
+function Get-ChatMessages($transcript) {
     $msgs = New-Object System.Collections.ArrayList
     foreach ($line in [SharedFile]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
         if ($d.type -ne 'response_item' -or $d.payload.type -ne 'message') { continue }
-        if ($since -and [DateTimeOffset]$d.timestamp -le $since) { continue }
         $role = "$($d.payload.role)"
         if ($role -ne 'user' -and $role -ne 'assistant') { continue }
 
@@ -1070,9 +876,8 @@ function Get-ChatMessages($transcript, $since) {
     return $msgs
 }
 
-# Compact state pack from Codex transcript tool calls and recent chat. This is not a
-# substitute for reading live files; it is a recovery map for a new agent session.
-function Get-HandoffStateMarkdown($transcript, $label, $since) {
+# Compact state pack for formatted clipboard exports; verify snapshots against live files.
+function Get-HandoffStateMarkdown($transcript, $label) {
     $lastUser = $null; $lastAgent = $null
     $calls = New-Object System.Collections.ArrayList
     $files = New-Object System.Collections.ArrayList
@@ -1081,7 +886,6 @@ function Get-HandoffStateMarkdown($transcript, $label, $since) {
     foreach ($line in [SharedFile]::ReadLines($transcript)) {
         if (-not $line.Trim()) { continue }
         try { $d = $line | ConvertFrom-Json } catch { continue }
-        if ($since -and $d.timestamp -and [DateTimeOffset]$d.timestamp -le $since) { continue }
         if ($d.type -eq 'response_item' -and $d.payload.type -eq 'message') {
             $text = Get-MessageText $d.payload
             if ($text) {
@@ -1135,10 +939,6 @@ function Get-HandoffStateMarkdown($transcript, $label, $since) {
     return ($out.ToArray() -join "`n")
 }
 
-function New-HandoffFileName($prefix) {
-    $safe = $prefix -replace '[^A-Za-z0-9._-]', '_'
-    return ("{0}-{1}.md" -f $safe, (Get-Date -Format 'yyyyMMdd-HHmmss'))
-}
 
 function Limit-HandoffText($text, $max = 3000) {
     if (-not $text) { return $text }
@@ -1159,95 +959,9 @@ function ConvertTo-ChatMarkdown($msgs) {
     return ($out.ToArray() -join "`n")
 }
 
-# Export a transcript as a chat-only markdown handoff and return its WSL path, or $null when
-# there are no messages (after $since, when given).
-function New-Handoff($transcript, $id, $cwd, $title, $since) {
-    $msgs = @(Get-ChatMessages $transcript $since)
-    if (-not $msgs) { return $null }
-    $safeTitle = "$title" -replace '[\r\n\]]', ' '
 
-    $head = @(
-        "# Handoff from a Codex session"
-        ""
-        "- Session id: ``$id``"
-        "- Repo / working dir: ``$cwd`` (you are running in it now)"
-        "- Conversation title: $safeTitle"
-        "- Exported: $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-        "- Source transcript: ``$transcript``"
-        $(if ($since) { "- Only messages after $($since.ToString('yyyy-MM-dd HH:mm:ss')), the previous handoff to you" })
-        ""
-        "Includes a compact state pack plus chat transcript. Tool outputs may be abbreviated."
-        "Anything quoted from a file is a snapshot from when it was written -- read"
-        "the file from disk instead of trusting it."
-        ""
-        "---"
-    ) -join "`n"
-
-    # LF, not WriteAllLines' CRLF: this is read inside WSL, and message bodies already
-    # carry LF -- mixing the two would leave stray CRs mid-document.
-    $fileName = New-HandoffFileName $id
-    $fileWin = Join-Path $handoffWin $fileName
-    [System.IO.File]::WriteAllText($fileWin, $head + "`n" + (Get-HandoffStateMarkdown $transcript 'Codex' $since) + "`n" + (ConvertTo-ChatMarkdown $msgs) + "`n")
-    return "$handoffWsl/$fileName"
-}
-
-# Where a transfer hotkey continues: a target session linked by earlier handoffs (newest
-# first, so Enter resumes it) or a new one. Returns @{ Id; Cwd; Title; Since } -- Id $null
-# for a new session -- or $null when cancelled.
-function Select-HandoffTarget($transcript, $tool) {
-    $linuxTr = if ($backend -eq 'wsl') { $transcript.Substring("\\wsl$\$distro".Length) -replace '\\','/' } else { ConvertTo-WslPath $transcript }
-    # Native Windows cwds arrive JSON-escaped (C:\\dir).
-    $links = @($(if ($tool -eq 'claude') {
-        Invoke-Bash $linksShWsl $linuxTr
-    } else {
-        Invoke-Bash $pyShWsl $linksOpenCodePyWsl $linuxTr $opencodeDbWsl
-    }) | Where-Object { $_ } | ForEach-Object { $_ -replace '\\\\','\' })
-    $new = [pscustomobject]@{ Id = $null }
-    if (-not $links) { return $new }
-    $rows = @(foreach ($link in $links) {
-        $mtime, $linkId, $linkCwd, $stamp, $linkTitle = $link -split "`t"
-        $folder = (($linkCwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
-        $age = Format-Age ([DateTimeOffset]::FromUnixTimeSeconds([long]$mtime).LocalDateTime)
-        "resume ${tool}: {0} - {1} - {2} ago [..-{3}]`t{4}" -f $folder, $(if ($linkTitle) { $linkTitle } else { 'untitled' }), $age, ($linkId -split '-')[-1], $link
-    }) + "+ new $tool session with the full handoff`t__NEW__"
-    [System.IO.File]::WriteAllLines($dirListWin, [string[]]$rows)
-    Remove-Item $pickWin -ErrorAction SilentlyContinue
-    Invoke-Bash $linkPickShWsl $dirListWsl $pickWsl $tool
-    $p = @(if (Test-Path $pickWin) { Get-Content $pickWin | Where-Object { $_ } })
-    if (-not $p) { return $null }
-    $link = $p[0].Substring($p[0].IndexOf("`t") + 1)
-    if ($link -eq '__NEW__') { return $new }
-    $mtime, $linkId, $linkCwd, $stamp, $linkTitle = $link -split "`t"
-    # Handoff names carry the local export time; this session's messages after it are new there.
-    $since = if ($stamp) { [DateTimeOffset][datetime]::ParseExact($stamp, 'yyyyMMdd-HHmmss', $null) }
-    return [pscustomobject]@{ Id = $linkId; Cwd = $linkCwd; Title = $linkTitle; Since = $since }
-}
-
-# A transfer hotkey: port this conversation to the target, seeded with the handoff -- a new
-# session in the same folder, or a linked one resumed in its own folder with the messages since.
 function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
-    if (-not $transcript -or -not (Test-Path $transcript)) {
-        Write-Host "No transcript found for $id"; Start-Sleep -Milliseconds 900; return
-    }
-    $target = Select-HandoffTarget $transcript $tool
-    if (-not $target) { return }
-    Write-Host "Exporting chat for $tool..." -NoNewline
-    $handoff = New-Handoff $transcript $id $cwd $title $target.Since
-    Write-Host "`r                           `r" -NoNewline
-    if ($target.Id) {
-        $linkTitle = if ($target.Title) { $target.Title } else { $target.Id }
-        $command = if ($tool -eq 'claude') {
-            if ($handoff) { (New-BashCommand @($claudeShWsl, $handoff, $target.Id)) } else { "claude --resume $($target.Id)" }
-        } else {
-            if ($handoff) { (New-BashCommand @($opencodeShWsl, $handoff, $target.Id)) } else { "opencode --session $($target.Id)" }
-        }
-        Open-WtTab "${tool}: $linkTitle" $target.Cwd $command
-        return
-    }
-    if (-not $handoff) { Write-Host "Nothing to hand off: no chat messages in $id"; Start-Sleep -Milliseconds 900; return }
-    $tabTitle = if ($title) { "${tool}: $title" } else { "${tool}: $id" }
-    $script = if ($tool -eq 'claude') { $claudeShWsl } else { $opencodeShWsl }
-    Open-WtTab $tabTitle $cwd (New-BashCommand @($script, $handoff))
+    Invoke-HubTransfer $tool @([pscustomobject]@{ Id = $id; Title = $title; Cwd = $cwd }) $cwd
 }
 
 # --- Alt-F: formatted chat export to the clipboard ---------------------------------
@@ -1446,12 +1160,7 @@ function Invoke-CopyExport($id, $cwd, $transcript) {
 }
 # -----------------------------------------------------------------------------------
 
-# --- Combine multiple sessions -----------------------------------------------------
-# Tab-marking 2+ rows and pressing enter/alt-c does NOT open each: it merges the marked
-# sessions' transcripts into ONE handoff and seeds a single fresh codex/claude session (or,
-# with alt-f, one combined clipboard copy). Everything reuses the same chat extraction as
-# the single-session flows (Get-ChatMessages / ConvertTo-ChatMarkdown), so what counts as
-# "the chat" never drifts between the single and combined paths.
+# --- Combined clipboard export and transfer entry points ----------------------------
 
 # Render the marked sessions as one markdown body of '# Thread N' sections. Returns
 # @{ Body=<markdown>; Count=<threads with chat> }, or $null if none had any messages.
@@ -1478,29 +1187,6 @@ function Build-CombinedThreads($items) {
     return @{ Body = ($body.ToArray() -join "`n"); Count = $n }
 }
 
-# Merge the marked sessions into one handoff file; return its WSL path (or $null).
-function New-CombinedHandoff($items, $cwd) {
-    $r = Build-CombinedThreads $items
-    if (-not $r) { return $null }
-    $head = @(
-        "# Combined handoff from multiple Codex sessions"
-        ""
-        "- Threads merged: $($r.Count)"
-        "- This session is running in: ``$cwd``"
-        "- Exported: $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-        ""
-        "Each '# Thread' below has a compact state pack plus chat transcript."
-        "The threads were separate sessions and they are related -- read them together."
-        "Anything quoted from a file is a stale snapshot; read the file from disk instead."
-        ""
-        "==="
-    ) -join "`n"
-    # LF, not WriteAllLines' CRLF (read inside WSL); overwrite -- only one combine at a time.
-    $fileName = New-HandoffFileName 'combined'
-    $fileWin = Join-Path $handoffWin $fileName
-    [System.IO.File]::WriteAllText($fileWin, $head + "`n" + $r.Body + "`n")
-    return "$handoffWsl/$fileName"
-}
 
 # Pick the folder the combined session runs in. The marked sessions may span different
 # repos, so choose among THEIR own cwds (not the whole new-session root): one distinct cwd
@@ -1520,15 +1206,9 @@ function Select-CombinedCwd($items) {
     ($p[0] -split "`t")[1]
 }
 
-# enter/alt-c on 2+ marked rows: merge and open one new codex/claude session.
+# Reuse the shared transfer planner for combined sessions.
 function Invoke-CombineSession($items, $tool) {
-    $cwd = Select-CombinedCwd $items
-    if (-not $cwd) { return }   # cancelled the folder pick
-    Write-Host ("Merging {0} chats for {1}..." -f $items.Count, $tool) -NoNewline
-    $handoff = New-CombinedHandoff $items $cwd
-    Write-Host "`r                              `r" -NoNewline
-    if (-not $handoff) { Write-Host "Nothing to combine: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return }
-    Open-WtTab ("{0}: combined x{1}" -f $tool, $items.Count) $cwd (New-BashCommand @($comboShWsl, $tool, $handoff))
+    Invoke-HubTransfer $tool $items $items[0].Cwd
 }
 
 # alt-f on 2+ marked rows: one combined formatted copy to the clipboard (opens nothing).
