@@ -620,7 +620,7 @@ prompt="Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Ea
 if [ "`$1" = codex ]; then
     codex -c tui.fullscreen_transcript=false "`$prompt"
 elif [ "`$1" = opencode ]; then
-    opencode mini --replay-limit 100 --prompt "`$prompt"
+    opencode --prompt "`$prompt"
 else
     claude "`$prompt"
 fi
@@ -904,10 +904,7 @@ After every completed repository change, automatically create a local Git commit
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'opencode') { $name } else { "${tool}: $name" }
-    $command = if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' }
-               elseif ($tool -eq 'opencode') { 'opencode mini --replay-limit 100' }
-               else { $tool }
-    Open-WtTab $title $path $command
+    Open-WtTab $title $path $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
 }
 
 # Read one OpenCode session as chat messages: @{ Role='User'|'OpenCode'; Body=... }.
@@ -1507,6 +1504,6 @@ while ($true) {
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
         if ($tool -ne 'opencode') { Invoke-Handoff $tool $it.Id $it.Cwd $it.Title; continue }
         $tabTitle = if ($it.Title) { "opencode: $($it.Title)" } else { "opencode: $($it.Id)" }
-        Open-WtTab $tabTitle $it.Cwd "opencode mini --replay-limit 100 --session $($it.Id)"
+        Open-WtTab $tabTitle $it.Cwd "opencode --session $($it.Id)"
     }
 }

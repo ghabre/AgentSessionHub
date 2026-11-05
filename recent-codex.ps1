@@ -22,7 +22,7 @@
 # its last handoff, or to start a new one.
 #
 # Alt-O does the same in OPENCODE: the handoff is written the same way and
-# `opencode mini --prompt` opens with it (or `opencode mini --session` resumes a linked one).
+# `opencode --prompt` opens with it (or `opencode --session` resumes a linked one).
 #
 # Alt-F on a session row copies that conversation to the clipboard, formatted: the same
 # chat-only export, rendered to HTML (monospace, colour-coded speaker labels) and put on
@@ -509,10 +509,10 @@ $opencodeSh = @"
 #!/bin/bash
 # `$1 = handoff markdown path, `$2 = opencode session to resume with it (none: start a new one).
 if [ -n "`$2" ]; then
-    exec opencode mini --replay-limit 100 --session "`$2" --prompt "[Continued from Codex] Read `$1 -- the conversation continued in Codex after you last saw it. It holds a compact state pack and only the chat messages since then. Tool outputs and quoted file contents may be stale, so re-read live files from disk before relying on them. Tell me what changed and what you plan to do next."
+    exec opencode --session "`$2" --prompt "[Continued from Codex] Read `$1 -- the conversation continued in Codex after you last saw it. It holds a compact state pack and only the chat messages since then. Tool outputs and quoted file contents may be stale, so re-read live files from disk before relying on them. Tell me what changed and what you plan to do next."
 fi
 transition_title=`$(sed -n 's/^- Conversation title: //p' "`$1" | head -n 1)
-opencode mini --replay-limit 100 --prompt "[Transitioned from Codex; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
+opencode --prompt "[Transitioned from Codex; inherited title: `$transition_title] Read `$1 -- it is a chat handoff, not a true session resume. It starts with a compact state pack, then the chat transcript. Reconstruct the prior work from the state pack first: current objective, decisions, files touched or mentioned, commands/tests run, failures, and likely next action. Then read the transcript for nuance. Tool outputs and quoted file contents may be stale or abbreviated, so re-read live files from disk before relying on them. Start by telling me your understanding of the state and what you plan to do next."
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($opencodeShWin, $opencodeSh)
 
@@ -639,7 +639,7 @@ prompt="Read `$2 -- it is a COMBINED chat handoff, not a true session resume. Ea
 if [ "`$1" = codex ]; then
     codex -c tui.fullscreen_transcript=false "`$prompt"
 elif [ "`$1" = opencode ]; then
-    opencode mini --replay-limit 100 --prompt "`$prompt"
+    opencode --prompt "`$prompt"
 else
     claude "`$prompt"
 fi
@@ -1016,10 +1016,7 @@ After every completed repository change, automatically create a local Git commit
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'codex') { $name } else { "${tool}: $name" }
-    $command = if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' }
-               elseif ($tool -eq 'opencode') { 'opencode mini --replay-limit 100' }
-               else { $tool }
-    Open-WtTab $title $path $command
+    Open-WtTab $title $path $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
 }
 
 # Text of a transcript record, whatever content shape Codex used: a plain string, or a
@@ -1242,7 +1239,7 @@ function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
         $command = if ($tool -eq 'claude') {
             if ($handoff) { (New-BashCommand @($claudeShWsl, $handoff, $target.Id)) } else { "claude --resume $($target.Id)" }
         } else {
-            if ($handoff) { (New-BashCommand @($opencodeShWsl, $handoff, $target.Id)) } else { "opencode mini --replay-limit 100 --session $($target.Id)" }
+            if ($handoff) { (New-BashCommand @($opencodeShWsl, $handoff, $target.Id)) } else { "opencode --session $($target.Id)" }
         }
         Open-WtTab "${tool}: $linkTitle" $target.Cwd $command
         return
