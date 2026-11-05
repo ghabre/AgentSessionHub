@@ -9,8 +9,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 import uuid
 
@@ -221,6 +223,34 @@ def read_sessions(request, db):
     return sessions
 
 
+def migrate_state(directory, old_directory):
+    if directory.exists() or not old_directory:
+        return
+    old = Path(native_path(old_directory))
+    if not (old / 'sync.db').is_file():
+        return
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix='.migrate-', dir=directory.parent))
+    try:
+        with closing(sqlite3.connect((old / 'sync.db').resolve().as_uri() + '?mode=ro', uri=True)) as source:
+            with closing(sqlite3.connect(staging / 'sync.db')) as target, target:
+                source.backup(target)
+                (staging / 'handoffs').mkdir()
+                for tid, filename in target.execute('SELECT id, path FROM transfers').fetchall():
+                    payload = Path(native_path(filename))
+                    shutil.copy2(payload, staging / 'handoffs' / payload.name)
+                    target.execute('UPDATE transfers SET path = ? WHERE id = ?',
+                                   (str(directory / 'handoffs' / payload.name), tid))
+        try:
+            staging.rename(directory)
+        except OSError:
+            # Another picker may have finished the same migration first.
+            if not (directory / 'sync.db').is_file():
+                raise
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def open_ledger(directory):
     directory.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(directory / 'sync.db', timeout=30)
@@ -238,6 +268,7 @@ def session_info(session):
 
 def plan(request):
     directory = Path(native_path(request['state_dir']))
+    migrate_state(directory, request.get('legacy_state_dir'))
     with closing(open_ledger(directory)) as db, db:
         # Serialize discovery and planning across picker processes. A second launch
         # sees the first pending transfer instead of allocating a competing session.
@@ -414,6 +445,12 @@ def main():
     request_path, result_path = (native_path(value) for value in sys.argv[1:3])
     with open(request_path, encoding='utf-8-sig') as stream:
         request = json.load(stream)
+    scope = request.get('scope')
+    if scope is None:
+        # Pickers already open before the move still send the former state path.
+        request.setdefault('legacy_state_dir', request['state_dir'])
+        scope = Path(native_path(request['state_dir'])).name
+    request['state_dir'] = str(Path(__file__).resolve().parent / '.history' / scope)
     try:
         result = plan(request)
     except (OSError, ValueError, sqlite3.Error) as error:

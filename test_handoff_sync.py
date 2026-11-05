@@ -314,6 +314,27 @@ class TransferTests(unittest.TestCase):
         forward = self.transfer([self.key('codex', fork)], 'opencode')
         self.assertIn('additional source context', self.payload(forward))
 
+    def test_moving_history_preserves_receipts_payloads_and_pending_retry(self):
+        self.append('claude', 'original')
+        first = self.transfer([self.key('claude')], 'codex')
+        old_directory = self.request['state_dir']
+        old_payload = Path(first['handoff'])
+        self.request['state_dir'] = str(self.root / '.history' / 'sync-windows')
+        self.request['legacy_state_dir'] = old_directory
+        retry = self.transfer([self.key('claude')], 'codex', retry=True)
+        self.assertNotEqual(first['handoff'], retry['handoff'])
+        self.assertEqual(old_payload.read_bytes(), Path(retry['handoff']).read_bytes())
+        self.assertTrue(old_payload.is_file())
+        self.assertTrue((Path(old_directory) / 'sync.db').is_file())
+        # A prompt already queued with its old path still acknowledges the same UUID.
+        self.accept(first, 'codex')
+        self.assertIsNone(self.transfer([self.key('claude')], 'codex')['handoff'])
+        self.append('claude', 'new work')
+        next_transfer = self.transfer([self.key('claude')], 'codex')
+        self.accept(next_transfer, 'codex')
+        # Subsequent runs must not replace the new ledger with the older copy.
+        self.assertIsNone(self.transfer([self.key('claude')], 'codex')['handoff'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -20,7 +20,7 @@
 # Tab marks multiple sessions; Enter or a transfer key continues their combined
 # conversation, reusing the existing result when known. Alt-F copies one or more
 # selected chats as formatted HTML plus markdown (requires pandoc).
-# Transfer state and immutable payloads live under %LOCALAPPDATA%\AgentSessionHub,
+# Transfer state and immutable payloads live in the gitignored .history folder beside this script,
 # separately for each backend/distro. Keep this directory to preserve synchronization.
 #
 # On startup it also snapshots opencode.db to a .tar.gz under .\backups\opencode, but only
