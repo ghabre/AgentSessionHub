@@ -72,9 +72,10 @@ function Get-HubTransferPlan($request) {
 function Invoke-HubTransfer($tool, $items, $cwd) {
     try {
         $scope = if ($backend -eq 'wsl') { "wsl-$distro" } else { 'windows' }
-        $stateWin = Join-Path $hubStateDir ("sync-" + ($scope -replace '[^A-Za-z0-9._-]', '_'))
+        $stateName = "sync-" + ($scope -replace '[^A-Za-z0-9._-]', '_')
         $request = @{
-            state_dir = ConvertTo-WslPath $stateWin
+            scope = $stateName
+            legacy_state_dir = ConvertTo-WslPath (Join-Path $hubStateDir $stateName)
             codex_root = "$bashHome/.codex/sessions"
             claude_root = "$bashHome/.claude/projects"
             opencode_db = $opencodeDbWsl
