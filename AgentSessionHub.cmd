@@ -43,16 +43,4 @@ rem No other launch can be running now, so the time alone names this hub's windo
 set "AGENT_SESSION_HUB_WINDOW=AgentSessionHub-%day%-%now::=%"
 set "AGENT_SESSION_HUB_WINDOW=%AGENT_SESSION_HUB_WINDOW:.=%"
 set "AGENT_SESSION_HUB_WINDOW=%AGENT_SESSION_HUB_WINDOW:,=%"
-set "tools=%AGENT_HUB_TOOLS%"
-if not defined tools set "tools=codex,claude,opencode"
-set "tools=,%tools: =%,"
-set "tabs="
-if /i not "%tools:,codex,=%"=="%tools%" set "tabs=new-tab --title "Codex" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-codex.ps1""
-if /i not "%tools:,claude,=%"=="%tools%" (
-    if defined tabs (set "tabs=%tabs% ; new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1"") else set "tabs=new-tab --title "Claude" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-claude.ps1""
-)
-if /i not "%tools:,opencode,=%"=="%tools%" (
-    if defined tabs (set "tabs=%tabs% ; new-tab --title "OpenCode" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-opencode.ps1"") else set "tabs=new-tab --title "OpenCode" powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0recent-opencode.ps1""
-)
-if not defined tabs exit /b 1
-"%terminal%" -w "%AGENT_SESSION_HUB_WINDOW%" %tabs%
+powershell.exe -NoLogo -ExecutionPolicy Bypass -File "%~dp0start-hub.ps1" "%terminal%"
