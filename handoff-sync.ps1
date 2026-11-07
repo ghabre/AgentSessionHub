@@ -71,6 +71,7 @@ function Get-HubTransferPlan($request) {
 
 function Invoke-HubTransfer($tool, $items, $cwd) {
     try {
+        if ($tool -notin $availableTools) { throw "$tool is unavailable in the $backend backend. Install it before transferring a conversation." }
         $scope = if ($backend -eq 'wsl') { "wsl-$distro" } else { 'windows' }
         $stateName = "sync-" + ($scope -replace '[^A-Za-z0-9._-]', '_')
         $request = @{
@@ -142,6 +143,35 @@ $clickBinds
         $title = $title -replace '[\r\n\]]', ' '
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }
         $command = New-BashCommand @($syncLaunchWsl, $tool, $handoffArg, $resumeId, $label, $title)
+        if ($backend -eq 'windows') {
+            # Run the CLI in the destination PowerShell profile, just like normal
+            # Windows launches. Keep prompts and IDs out of native shell quoting.
+            $launchData = @{ tool = $tool; handoff = $plan.handoff; resume = $resumeId; label = $label; title = $title }
+            if ($plan.handoff) { $launchData.handoff = ConvertFrom-WslPath $plan.handoff }
+            $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($launchData | ConvertTo-Json -Compress)))
+            $nativeLaunchWin = Join-Path $tmpWin ("sync-launch-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
+            $nativeLaunch = @'
+$ErrorActionPreference = 'Stop'
+$data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
+$cliArgs = @()
+if ($data.tool -eq 'codex') { $cliArgs += @('-c', 'tui.fullscreen_transcript=false') }
+if ($data.resume -ne '-') {
+    switch ($data.tool) {
+        codex { $cliArgs += @('resume', $data.resume) }
+        claude { $cliArgs += @('--resume', $data.resume) }
+        opencode { $cliArgs += @('--session', $data.resume) }
+    }
+}
+if ($data.handoff) {
+    $prompt = "[Transitioned from $($data.label); inherited title: $($data.title)] Read $($data.handoff) -- this is an incremental conversation continuation. It contains only material not previously recorded in this session. Continue the existing task without reinitializing it. Read the entire handoff before proceeding. Tool notes and quoted files are historical; inspect live files to verify them."
+    if ($data.tool -eq 'opencode') { $cliArgs += '--prompt' }
+    $cliArgs += $prompt
+}
+& $data.tool @cliArgs
+'@
+            [IO.File]::WriteAllText($nativeLaunchWin, $nativeLaunch.Replace('__PAYLOAD__', $payload))
+            $command = "& '" + $nativeLaunchWin.Replace("'", "''") + "'"
+        }
         Write-Host $(if ($plan.handoff) { "Continuing with $($plan.count) new messages/tool notes." } else { 'Already synchronized; resuming without adding a prompt.' })
         Open-WtTab "${tool}: $title" $cwd $command
     } catch {

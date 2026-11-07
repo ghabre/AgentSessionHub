@@ -73,11 +73,14 @@ public static class SharedFile {
 $backend = if ($env:AGENT_HUB_BACKEND) { $env:AGENT_HUB_BACKEND.ToLowerInvariant() } else { 'wsl' }
 if ($backend -notin @('wsl', 'windows')) { throw "AGENT_HUB_BACKEND must be 'wsl' or 'windows', not '$backend'" }
 
+. (Join-Path $PSScriptRoot 'hub-tools.ps1')
+$availableTools = @(Get-HubAvailableTools)
+
 $enabledTools = @(if ($env:AGENT_HUB_TOOLS) {
     $env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
 } else {
     'codex', 'claude', 'opencode'
-})
+}) | Where-Object { $_ -in $availableTools }
 $codexEnabled = 'codex' -in $enabledTools
 $opencodeEnabled = 'opencode' -in $enabledTools
 

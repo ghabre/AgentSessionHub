@@ -8,8 +8,9 @@ if (-not (Test-Path $gitBash)) {
 }
 if (-not (Test-Path $gitBash)) { throw 'Git for Windows is required for this integration check.' }
 $backend = 'windows'
+$availableTools = @('codex', 'claude', 'opencode')
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-codex.ps1'), [ref]$null, [ref]$null)
-foreach ($name in @('ConvertTo-WslPath', 'New-BashCommand')) {
+foreach ($name in @('ConvertTo-WslPath', 'ConvertFrom-WslPath', 'New-BashCommand')) {
     $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Invoke-Expression $fn.Extent.Text
 }
@@ -68,6 +69,10 @@ try {
     $oldPath = $env:PATH
     try {
         $env:PATH = "$binWin;$oldPath"
+        # Native handoffs resolve profile-defined commands directly in PowerShell.
+        function codex { $args }
+        $nativeFreshArgs = @(Invoke-Expression $script:launches[0])
+        Assert-True ($nativeFreshArgs.Count -eq 3 -and $nativeFreshArgs[2].Contains((ConvertFrom-WslPath $first.handoff))) 'Native fresh launch arguments were damaged.'
         $freshCommand = New-BashCommand @($syncLaunchWsl, 'codex', $first.handoff, '-', 'Claude', "Task O'Brien")
         $freshArgs = @(Invoke-Expression $freshCommand)
         Assert-True ($freshArgs.Count -eq 3 -and $freshArgs[0] -eq '-c' -and $freshArgs[2].Contains($first.handoff)) 'Fresh launch arguments were damaged.'
