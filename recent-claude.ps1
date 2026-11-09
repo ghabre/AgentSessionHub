@@ -632,6 +632,8 @@ function Restart-Script {
     $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
     if (-not $scriptPath) { Write-Host "Cannot reload: script path is unknown"; Start-Sleep -Milliseconds 900; return }
     Write-Host "Reloading script..."
+    # Re-detect CLIs so a tool installed since the hub launched appears.
+    $env:AGENT_HUB_AVAILABLE_TOOLS = $null
     $reloadArgs = @($script:recentScriptArgs)
     & powershell.exe -NoExit -ExecutionPolicy Bypass -File $scriptPath @reloadArgs
     exit
