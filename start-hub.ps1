@@ -1,7 +1,14 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hub-tools.ps1')
 $requested = if ($env:AGENT_HUB_TOOLS) { @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() }) } else { @('codex', 'claude', 'opencode') }
-$available = @(Get-HubAvailableTools)
+$env:AGENT_HUB_AVAILABLE_TOOLS = $null
+try { $available = @(Get-HubAvailableTools) } catch {
+    # Launched from a shortcut, so keep the failure readable.
+    Write-Host $_.Exception.Message
+    [void](Read-Host 'Press Enter to close this launcher')
+    exit 1
+}
+$env:AGENT_HUB_AVAILABLE_TOOLS = $available -join ','
 $missing = @($requested | Where-Object { $_ -in @('codex', 'claude', 'opencode') -and $_ -notin $available })
 $showReminder = Show-HubMissingTools $missing
 $tabs = @()
