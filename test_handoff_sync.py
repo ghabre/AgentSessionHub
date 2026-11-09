@@ -222,6 +222,15 @@ class TransferTests(unittest.TestCase):
         self.assertIn('original task', self.payload(forward))
         self.assertIn('summary', self.payload(forward))
 
+    def test_paginated_codex_segment_keeps_earlier_segment_turns(self):
+        self.append('codex', 'earlier segment work')
+        segment = Path(self.request['codex_root']) / ('rollout-later-' + IDS['codex'] + '.jsonl')
+        rows = [{'type': 'session_meta', 'payload': {'id': IDS['codex'], 'cwd': str(self.root), 'history_base': {'thread_id': IDS['codex']}}},
+                {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'later segment work'}]}}]
+        segment.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        payload = self.payload(self.transfer([self.key('codex')], 'claude'))
+        self.assertLess(payload.index('earlier segment work'), payload.index('later segment work'))
+
     def test_unrelated_missing_legacy_file_does_not_block_transfer(self):
         self.append('claude', 'task')
         self.append('codex', 'Read /tmp/recent-claude-handoff/99999999-9999-9999-9999-999999999999-20261105-120000.md -- continue')

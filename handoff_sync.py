@@ -56,6 +56,7 @@ class Session:
         self.legacy_context = []
         self.combined_sources = []
         self.continued = None
+        self.history_base = False
         self.active = True
         self.updated = 0
         self._counts = collections.Counter()
@@ -101,6 +102,13 @@ class Session:
         self.events.append({'id': event_id, 'origin': self.key, 'role': role, 'text': text})
         self.timeline.append({'event': event_id})
 
+    def follow(self, base):
+        """Append this paginated Codex segment to the earlier segments of the same thread."""
+        for name in ('events', 'markers', 'legacy', 'legacy_context', 'timeline'):
+            setattr(self, name, getattr(base, name) + getattr(self, name))
+        self.title = base.title or self.title
+        self.combined_sources = base.combined_sources or self.combined_sources
+
     def failure(self, text):
         if re.search(r'(?i)\b(error|failed|exception|traceback|denied|not found|cannot|unable|exit code [1-9])\b', text):
             self.add('tool failure', text[:700])
@@ -137,6 +145,7 @@ def read_jsonl(path, tool):
                     session.id = payload.get('id') or sid
                     session.key = tool + ':' + session.id
                     session.cwd = payload.get('cwd') or session.cwd
+                    session.history_base = bool(payload.get('history_base'))
                 if kind == 'response_item':
                     if payload.get('type') == 'message' and payload.get('role') in ('user', 'assistant'):
                         session.add(payload['role'], text_blocks(payload.get('content')), payload.get('id'))
@@ -181,7 +190,7 @@ def read_sessions(request, db):
             if 'subagents' in path.parts:
                 continue
             stat = path.stat()
-            signature = f'3:{stat.st_mtime_ns}:{stat.st_size}'
+            signature = f'4:{stat.st_mtime_ns}:{stat.st_size}'
             cached = db.execute('SELECT signature, data FROM cache WHERE path = ?', (str(path),)).fetchone()
             if cached and cached[0] == signature:
                 session = Session(tool, '')
@@ -193,7 +202,11 @@ def read_sessions(request, db):
                 data = {k: v for k, v in vars(session).items() if k != '_counts'}
                 db.execute('INSERT OR REPLACE INTO cache VALUES (?, ?, ?)', (str(path), signature, json.dumps(data)))
             old = sessions.get(session.key)
-            if old is None or session.updated > old.updated:
+            # Sorted paths put a Codex thread's dated segments in order.
+            if old and session.history_base:
+                session.follow(old)
+                sessions[session.key] = session
+            elif old is None or session.updated > old.updated:
                 sessions[session.key] = session
     path = Path(native_path(request['opencode_db']))
     if path.is_file():
