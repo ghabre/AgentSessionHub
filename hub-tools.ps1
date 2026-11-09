@@ -9,7 +9,7 @@ function Get-HubAvailableTools {
     } else {
         $wslArgs = @()
         if ($env:WSL_DISTRO) { $wslArgs += @('-d', $env:WSL_DISTRO) }
-        $output = @(& wsl.exe @wslArgs -- bash -lic 'for tool in codex claude opencode; do command -v "$tool" >/dev/null 2>&1 && echo HUB_TOOL:$tool; done; exit 0')
+        $output = @(& wsl.exe @wslArgs --exec bash -lic 'for tool in codex claude opencode; do command -v "$tool" >/dev/null 2>&1 && echo HUB_TOOL:$tool; done; exit 0')
     }
     @($output | ForEach-Object { if ("$_" -match '^HUB_TOOL:(codex|claude|opencode)$') { $Matches[1] } })
 }
