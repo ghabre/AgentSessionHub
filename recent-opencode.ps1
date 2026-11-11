@@ -87,6 +87,7 @@ $enabledTools = @(if ($env:AGENT_HUB_TOOLS) {
 }) | Where-Object { $_ -in $availableTools }
 $codexEnabled = 'codex' -in $enabledTools
 $claudeEnabled = 'claude' -in $enabledTools
+$claudeWorkEnabled = 'claude-work' -in ($env:AGENT_HUB_TOOLS -split ',' | ForEach-Object { $_.Trim().ToLowerInvariant() }) -and 'claude' -in $availableTools -and (Test-HubClaudeWork)
 $opencodeEnabled = 'opencode' -in $enabledTools
 
 # C:\dir\sub -> /mnt/c/dir/sub in WSL, /c/dir/sub in Git Bash. One definition for every
@@ -272,8 +273,8 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in opencode, hand the session off to codex/claude, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($claudeEnabled) { 'alt-c' }), 'alt-f', 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) { 'alt-c: claude' }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($claudeEnabled) { 'alt-c' }), $(if ($claudeWorkEnabled) { 'alt-w' }), 'alt-f', 'alt-h', 'alt-s') -join ','
+$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) { 'alt-c: claude' }), $(if ($claudeWorkEnabled) { 'alt-w: claude-work' }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -670,7 +671,7 @@ function Get-Sessions($visibility = 'visible') {
 # window to quit. Scan up front, then restart the script when Esc asks for it.
 # Synthetic first row: picking it (id __NEW__) triggers the folder picker below --
 # with opencode on enter/click, or a transfer target on its hotkey, same as the session rows.
-$newTargets = @($(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) { 'alt-c: claude' })) -join ' | '
+$newTargets = @($(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) { 'alt-c: claude' }), $(if ($claudeWorkEnabled) { 'alt-w: claude-work' })) -join ' | '
 $newRow = if ($newTargets) { "+ New session (choose folder)...  [enter: opencode | $newTargets]`t__NEW__`t`t" } else { "+ New session (choose folder)...  [enter: opencode]`t__NEW__`t`t" }
 
 function Restart-Script {
@@ -748,7 +749,8 @@ After every completed repository change, automatically create a local Git commit
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'opencode') { $name } else { "${tool}: $name" }
-    Open-WtTab $title $path $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
+    $command = if ($tool -in @('claude', 'claude-work')) { New-HubClaudeCommand 'claude' $(if ($tool -eq 'claude-work') { 'work' } else { 'personal' }) } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
+    Open-WtTab $title $path $command
 }
 
 # Read one OpenCode session as chat messages: @{ Role='User'|'OpenCode'; Body=... }.
@@ -1193,7 +1195,7 @@ while ($true) {
     # bash -lic loads the login profile so PATH includes opencode.
     # For the keys that launch something, the pressed key chooses the tool once, here;
     # everything below just uses $tool. (Alt-F launches nothing and ignores it.)
-    $tool = if ($key -eq 'alt-x') { 'codex' } elseif ($key -eq 'alt-c') { 'claude' } else { 'opencode' }
+    $tool = if ($key -eq 'alt-w') { 'claude-work' } elseif ($key -eq 'alt-x') { 'codex' } elseif ($key -eq 'alt-c') { 'claude' } else { 'opencode' }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
     # chats into one handoff and seed a single new session (enter/transfer key), or one

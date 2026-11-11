@@ -61,6 +61,65 @@ class TransferTests(unittest.TestCase):
     def payload(self, result):
         return Path(result['handoff']).read_text()
 
+    def test_duplicate_claude_ids_keep_profile_keys_and_cached_events_separate(self):
+        self.request['claude_work_root'] = str(self.root / 'work')
+        self.append('claude', 'personal task')
+        work = Path(self.request['claude_work_root'])
+        work.mkdir()
+        # A literal copied transcript includes the same native message UUID.
+        personal = Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')
+        row = json.loads(personal.read_text())
+        row['uuid'] = 'same-native-message'
+        personal.write_text(json.dumps(row) + '\n')
+        (work / personal.name).write_bytes(personal.read_bytes())
+        first = self.transfer([self.key('claude')], 'codex')
+        other = self.transfer(['claude-work:' + IDS['claude']], 'codex')
+        self.assertEqual('ready', other['status'])
+        self.assertIn('claude-work:' + IDS['claude'], self.payload(other))
+        self.assertNotEqual(first['handoff'], other['handoff'])
+        with sqlite3.connect(self.request['state_dir'] + '/sync.db') as db:
+            cached = [json.loads(row[0]) for row in db.execute('SELECT data FROM cache')]
+        sessions = {s['key']: s for s in cached if s['id'] == IDS['claude']}
+        self.assertEqual({'claude:' + IDS['claude'], 'claude-work:' + IDS['claude']}, set(sessions))
+        events = [s['events'][0]['id'] for s in sessions.values()]
+        self.assertEqual(2, len(set(events)))
+
+    def test_claude_receipts_and_resume_targets_stay_in_selected_profile(self):
+        self.request['claude_work_root'] = str(self.root / 'work')
+        self.append('codex', 'task')
+        first = self.transfer([self.key('codex')], 'claude')
+        self.accept(first, 'claude')
+        work = Path(self.request['claude_work_root'])
+        work.mkdir()
+        personal = Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')
+        (work / personal.name).write_bytes(personal.read_bytes())
+        result = self.transfer([self.key('codex')], 'claude-work')
+        self.assertEqual('ready', result['status'])
+        self.assertIsNone(result['target'])
+        self.assertIsNotNone(result['handoff'])
+        row = {'type': 'user', 'cwd': str(self.root), 'message': {'content': 'Read ' + result['handoff']}}
+        with (work / personal.name).open('a') as stream:
+            stream.write(json.dumps(row) + '\n')
+        repeat = self.transfer([self.key('codex')], 'claude-work')
+        self.assertEqual('claude-work:' + IDS['claude'], repeat['target']['key'])
+        self.assertIsNone(repeat['handoff'])
+        personal_repeat = self.transfer([self.key('codex')], 'claude')
+        self.assertEqual(self.key('claude'), personal_repeat['target']['key'])
+        self.assertIsNone(personal_repeat['handoff'])
+
+    def test_work_background_continuation_does_not_link_personal_successor(self):
+        self.request['claude_work_root'] = str(self.root / 'work')
+        successor = '33333333-3333-3333-3333-333333333333'
+        self.append('claude', 'personal successor', sid=successor)
+        work = Path(self.request['claude_work_root'])
+        work.mkdir()
+        row = {'type': 'user', 'cwd': str(self.root), 'continuedInSessionId': successor,
+               'message': {'content': 'work predecessor'}}
+        (work / (IDS['claude'] + '.jsonl')).write_text(json.dumps(row) + '\n')
+        result = self.transfer(['claude-work:' + IDS['claude']], 'claude')
+        self.assertIsNone(result['target'])
+        self.assertIn('work predecessor', self.payload(result))
+
     def test_all_six_directions_repeat_and_round_trip(self):
         for source in IDS:
             for target in IDS:

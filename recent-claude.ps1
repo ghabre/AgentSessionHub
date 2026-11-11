@@ -51,9 +51,13 @@
 # Usage: run under Windows PowerShell, e.g. a shortcut with target:
 #   powershell.exe -NoExit -ExecutionPolicy Bypass -File "C:\path\to\recent-claude.ps1"
 
+# -Profile work uses CLAUDE_WORK_CONFIG_DIR (default ~/.claude-work) and its own
+# backups\claude-work directory, overridable with CLAUDE_WORK_BACKUP_DIR.
+param([ValidateSet('personal', 'work')][string]$Profile = 'personal')
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
-$script:recentScriptArgs = @($args)
+$script:recentScriptArgs = @('-Profile', $Profile) + @($args)
 
 # File.ReadLines refuses files another process holds open for writing, which native agents
 # do with their live transcripts. Stream lines with read/write sharing instead.
@@ -138,12 +142,10 @@ printf '%s\n%s\n%s\n' "$u" "$f" "$db"
     $bashHome      = "/home/$wslUser"
     $fzfPath       = if ($probe.Count -ge 2 -and $probe[1]) { "$($probe[1])".Trim() } else { "$bashHome/.local/bin/fzf" }
     $opencodeDbWsl = if ($probe.Count -ge 3 -and $probe[2]) { "$($probe[2])".Trim() } else { "$bashHome/.local/share/opencode/opencode.db" }
-    $claude        = "\\wsl$\$distro\home\$wslUser\.claude"
 } else {
     $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
     if (-not (Test-Path $gitBash)) { throw "The windows backend needs Git for Windows: $gitBash not found" }
     $bashHome = ConvertTo-WslPath $HOME
-    $claude   = Join-Path $HOME '.claude'
     $dataBase = if ($env:XDG_DATA_HOME) { ConvertTo-WslPath $env:XDG_DATA_HOME } else { "$bashHome/.local/share" }
     $opencodeData = "$dataBase/opencode"
     $opencodeDbWsl = if ($env:OPENCODE_DB) {
@@ -175,10 +177,16 @@ function New-BashCommand([string[]]$arguments) {
 function Invoke-Git {
     if ($backend -eq 'wsl') { wsl.exe -d $distro -- git @args } else { git @args }
 }
+$claudeConfigDir = Get-HubClaudeConfigDir $Profile
+$claude = if ($backend -eq 'wsl') { ConvertFrom-WslPath $claudeConfigDir } else { $claudeConfigDir }
+$claudeConfigDirBash = if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDir } else { $claudeConfigDir }
+$profileTool = if ($Profile -eq 'work') { 'claude-work' } else { 'claude' }
+$otherProfile = if ($Profile -eq 'work') { 'personal' } else { 'work' }
+$otherProfileAvailable = if ($otherProfile -eq 'work') { Test-HubClaudeWork } else { $true }
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
 $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
-$hiddenSessionsFile = Join-Path $hubStateDir 'hidden-claude-session-ids.txt'
+$hiddenSessionsFile = Join-Path $hubStateDir "hidden-$profileTool-session-ids.txt"
 
 # Locate wt.exe (may not be on PATH depending on launch context)
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
@@ -198,7 +206,7 @@ function Open-WtTab($title, $cwd, $command) {
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
 }
 
-$hubTool = 'claude'
+$hubTool = $profileTool
 . (Join-Path $PSScriptRoot 'handoff-sync.ps1')
 
 # Use the LINUX fzf inside WSL, not fzf.exe: the Windows build mis-parses Windows
@@ -270,8 +278,8 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-f', 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), $(if ($otherProfileAvailable) { 'alt-w' }), 'alt-f', 'alt-h', 'alt-s') -join ','
+$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($otherProfileAvailable) { "alt-w: copy to $otherProfile" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -280,7 +288,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --multi \
     --expect=$expectKeys \
 $clickBinds
-    --prompt='claude sessions> ' --reverse \
+    --prompt='$profileTool sessions> ' --reverse \
     --header='$headerActions' \
     > "`$2"
 "@ -replace "`r`n","`n"
@@ -292,7 +300,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
 $clickBinds
-    --prompt='hidden claude sessions> ' --reverse \
+    --prompt='hidden $profileTool sessions> ' --reverse \
     --header='enter: show | tab: mark multiple | esc: cancel' \
     > "`$2"
 "@ -replace "`r`n","`n"
@@ -308,9 +316,9 @@ $scanShWin = Join-Path $tmpWin 'scan.sh'; $scanShWsl = "$tmpWsl/scan.sh"
 $scanSh = @"
 #!/bin/bash
 if [ "`$1" = all ]; then
-    find "$bashHome/.claude/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+    find "`$2/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 else
-    find "$bashHome/.claude/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+    find "`$2/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 fi |
 while IFS=`$'\t' read -r session_mtime session_path; do
     if ! grep -am1 -oE '"entrypoint":"[^"]*"' "`$session_path" | grep -q '"sdk-'; then
@@ -359,7 +367,8 @@ $clickBinds
 # survive `wsl --unregister`, a VHD corruption, or a distro rebuild. ~1.7s and ~26MB per
 # snapshot at 100MB of transcripts, so it runs inline at startup rather than in the
 # background. Override the location with $env:CLAUDE_BACKUP_DIR.
-$backupDir    = if ($env:CLAUDE_BACKUP_DIR) { $env:CLAUDE_BACKUP_DIR } else { Join-Path $PSScriptRoot 'backups\claude' }
+$backupOverride = if ($Profile -eq 'work') { $env:CLAUDE_WORK_BACKUP_DIR } else { $env:CLAUDE_BACKUP_DIR }
+$backupDir = if ($backupOverride) { $backupOverride } else { Join-Path $PSScriptRoot "backups\$profileTool" }
 $backupDirWsl = ConvertTo-WslPath $backupDir
 $backupEvery  = 24   # hours between snapshots
 $backupKeep   = 10   # snapshots retained; older ones are pruned
@@ -388,7 +397,7 @@ if [ -n "`$newest" ]; then
 fi
 
 out="`$dir/claude-history-`$(date +%Y%m%d-%H%M%S).tar.gz"
-cd "`$HOME/.claude" 2>/dev/null || exit 0
+cd "`$2" 2>/dev/null || exit 0
 set -- projects
 [ -f history.jsonl ] && set -- "`$@" history.jsonl   # the prompt history, same category, tiny
 
@@ -409,7 +418,7 @@ ls -1 "`$dir"/claude-history-*.tar.gz 2>/dev/null | sort | head -n -$backupKeep 
 # Runs once per launch; backup.sh itself decides whether one is actually due.
 function Invoke-Backup {
     Write-Host "Checking transcript backup..." -NoNewline
-    $made = @(Invoke-Bash $backupShWsl $backupDirWsl | Where-Object { $_ })
+    $made = @(Invoke-Bash $backupShWsl $backupDirWsl $claudeConfigDirBash | Where-Object { $_ })
     Write-Host "`r                             `r" -NoNewline
     if ($made) {
         $f = Get-Item (Join-Path $backupDir (Split-Path $made[-1] -Leaf)) -ErrorAction SilentlyContinue
@@ -443,7 +452,7 @@ $relocatedPattern = '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"'
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v7.json'
+$cacheFile = Join-Path $env:TEMP "recent-$profileTool-cache-v7.json"
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -534,7 +543,7 @@ function Get-Sessions($visibility = 'visible') {
     # Gather top-level sessions updated within 40 days (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
     $scanMode = if ($visibility -eq 'hidden') { 'all' } else { 'recent' }
-    Invoke-Bash $scanShWsl $scanMode |
+    Invoke-Bash $scanShWsl $scanMode $claudeConfigDirBash |
         ForEach-Object {
             $epoch, $linuxPath = $_ -split "`t"
             $winPath   = ConvertFrom-WslPath $linuxPath
@@ -703,7 +712,8 @@ After every completed repository change, automatically create a local Git commit
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
-    Open-WtTab $title $path $(if ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool })
+    $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $Profile } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
+    Open-WtTab $title $path $command
 }
 
 # Read a transcript as an ordered list of chat messages: @{ Role='User'|'Claude'; Body=... }.
@@ -832,6 +842,25 @@ function ConvertTo-ChatMarkdown($msgs) {
     return ($out.ToArray() -join "`n")
 }
 
+
+function Copy-SessionToOtherProfile($item) {
+    $targetConfig = Get-HubClaudeConfigDir $otherProfile
+    $targetRoot = if ($backend -eq 'wsl') { ConvertFrom-WslPath $targetConfig } else { $targetConfig }
+    if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Claude $otherProfile config directory does not exist: $targetRoot" }
+    $sourceRoot = [IO.Path]::GetFullPath($projects).TrimEnd('\') + '\'
+    $source = [IO.Path]::GetFullPath($item.Tr)
+    if (-not $source.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Transcript is outside this profile projects directory.' }
+    $destination = Join-Path (Join-Path $targetRoot 'projects') $source.Substring($sourceRoot.Length)
+    if (Test-Path -LiteralPath $destination) {
+        Write-Host "Skipping existing destination transcript: $destination"
+        return
+    }
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+    # File.Copy refuses overwrite, including a destination created after the check.
+    [IO.File]::Copy($source, $destination, $false)
+    $targetTool = if ($otherProfile -eq 'work') { 'claude-work' } else { 'claude' }
+    Open-WtTab "${targetTool}: $($item.Title)" $item.Cwd (New-HubClaudeCommand "claude --resume $($item.Id)" $otherProfile)
+}
 
 function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
     Invoke-HubTransfer $tool @([pscustomobject]@{ Id = $id; Title = $title; Cwd = $cwd }) $cwd
@@ -1081,6 +1110,7 @@ function Select-CombinedCwd($items) {
 
 # Reuse the shared transfer planner for combined sessions.
 function Invoke-CombineSession($items, $tool) {
+    if ($tool -eq 'claude') { $tool = $profileTool }
     Invoke-HubTransfer $tool $items $items[0].Cwd
 }
 
@@ -1171,6 +1201,10 @@ while ($true) {
         $item
     })
     $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
+    if ($key -eq 'alt-w') {
+        foreach ($item in $realItems) { Copy-SessionToOtherProfile $item }
+        continue
+    }
     if ($realItems.Count -ge 2) {
         if ($key -eq 'alt-f') { Invoke-CombineCopy $realItems }
         else                  { Invoke-CombineSession $realItems $tool }
@@ -1184,7 +1218,7 @@ while ($true) {
         }
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
         if ($tool -ne 'claude')   { Invoke-Handoff $tool $it.Id $it.Cwd $it.Tr $it.Title; continue }
-        $tabTitle = if ($it.Title) { "claude: $($it.Title)" } else { "claude: $($it.Id)" }
-        Open-WtTab $tabTitle $it.Cwd "claude --resume $($it.Id)"
+        $tabTitle = if ($it.Title) { "${profileTool}: $($it.Title)" } else { "${profileTool}: $($it.Id)" }
+        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $Profile)
     }
 }
