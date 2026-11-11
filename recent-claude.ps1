@@ -182,6 +182,7 @@ $claude = if ($backend -eq 'wsl') { ConvertFrom-WslPath $claudeConfigDir } else 
 $claudeConfigDirBash = if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDir } else { $claudeConfigDir }
 $profileTool = if ($Profile -eq 'work') { 'claude-work' } else { 'claude' }
 $otherProfile = if ($Profile -eq 'work') { 'personal' } else { 'work' }
+$profileCopyKey = if ($Profile -eq 'work') { 'alt-c' } else { 'alt-w' }
 $otherProfileAvailable = if ($otherProfile -eq 'work') { Test-HubClaudeWork } else { $true }
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
@@ -278,8 +279,8 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), $(if ($otherProfileAvailable) { 'alt-w' }), 'alt-f', 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($otherProfileAvailable) { "alt-w: copy to $otherProfile" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), $(if ($otherProfileAvailable) { $profileCopyKey }), 'alt-f', 'alt-h', 'alt-s') -join ','
+$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($otherProfileAvailable) { "${profileCopyKey}: copy to $otherProfile" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -1201,7 +1202,7 @@ while ($true) {
         $item
     })
     $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
-    if ($key -eq 'alt-w') {
+    if ($key -eq $profileCopyKey) {
         foreach ($item in $realItems) { Copy-SessionToOtherProfile $item }
         continue
     }
