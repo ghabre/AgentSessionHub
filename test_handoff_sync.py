@@ -11,7 +11,7 @@ import unittest
 
 from handoff_sync import plan
 
-LINK_SCRIPT = Path(__file__).with_name('link-claude-accounts.sh')
+LINK_SCRIPT = Path(__file__).with_name('claude-accounts.sh')
 
 
 IDS = {'codex': '11111111-1111-1111-1111-111111111111',
@@ -356,27 +356,29 @@ class LinkAccountTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.shared = self.root / 'shared'
+        self.shared = self.root / '.claude'
         (self.shared / 'projects' / 'p').mkdir(parents=True)
         (self.shared / 'projects' / 'p' / 'shared.jsonl').write_text('shared')
         (self.shared / 'settings.json').write_text('shared settings')
-        self.account = self.root / "work O'Brien"
+        self.account = self.root / ".claude-work O'Brien"
         (self.account / 'projects' / 'old').mkdir(parents=True)
         (self.account / 'projects' / 'old' / 'own.jsonl').write_text('own')
         (self.account / 'settings.json').write_text('own settings')
         (self.account / '.credentials.json').write_text('login')
-        (self.account / '.claude.json').write_text('{}')
+        (self.account / '.claude.json').write_text('{"oauthAccount": {"emailAddress": "work@example.com"}}')
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def link(self, *accounts):
-        result = subprocess.run(['bash', str(LINK_SCRIPT), str(self.shared), *map(str, accounts)],
+    def link(self, *args):
+        result = subprocess.run(['bash', str(LINK_SCRIPT), str(self.shared), *args],
                                 capture_output=True, text=True, check=True)
-        return result.stdout.splitlines()
+        lines = result.stdout.splitlines()
+        self.accounts = [line[8:].split('\t') for line in lines if line.startswith('ACCOUNT:')]
+        return [line for line in lines if not line.startswith('ACCOUNT:')]
 
     def test_links_history_keeps_login_and_sets_aside_without_deleting(self):
-        out = self.link(self.account, self.root / 'missing')
+        out = self.link()
         self.assertEqual('shared', (self.account / 'projects' / 'p' / 'shared.jsonl').read_text())
         self.assertTrue((self.account / 'sessions').is_symlink())
         self.assertEqual('login', (self.account / '.credentials.json').read_text())
@@ -386,12 +388,20 @@ class LinkAccountTests(unittest.TestCase):
         self.assertEqual({'projects', 'settings.json'}, {p.name.split('.pre-shared-')[0] for p in aside})
         own = next(p for p in aside if p.name.startswith('projects'))
         self.assertEqual('own', (own / 'old' / 'own.jsonl').read_text())
-        self.assertEqual([], self.link(self.account))  # idempotent
+        self.assertEqual([], self.link())  # idempotent
+
+    def test_lists_accounts_with_emails_and_appends_new_numbered_ones(self):
+        (self.root / '.claude-10').mkdir()
+        (self.root / '.claude.json').write_text('{"oauthAccount": {"emailAddress": "first@example.com"}}')
+        self.link('new')
+        self.assertEqual([[str(self.shared), 'first@example.com'], [str(self.account), 'work@example.com'],
+                          [str(self.root / '.claude-2'), ''], [str(self.root / '.claude-10'), '']], self.accounts)
+        self.assertTrue((self.root / '.claude-2' / 'projects').is_symlink())
 
     def test_account_with_live_session_is_left_alone(self):
         (self.account / 'sessions').mkdir()
         (self.account / 'sessions' / f'{os.getpid()}.json').write_text('{}')
-        self.assertEqual([f'LIVE:{self.account}'], self.link(self.account))
+        self.assertEqual([f'LIVE:{self.account}'], self.link())
         self.assertFalse((self.account / 'projects').is_symlink())
 
 

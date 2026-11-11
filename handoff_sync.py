@@ -16,7 +16,7 @@ import tempfile
 import time
 import uuid
 
-# Claude accounts share one history (link-claude-accounts.sh), so Claude is one tool.
+# Claude accounts share one history (claude-accounts.sh), so Claude is one tool.
 TOOLS = ('codex', 'claude', 'opencode')
 MARKER = re.compile(r'hub-transfer-([0-9a-f]{32})\.md')
 LEGACY = re.compile(r'recent-(codex|claude|opencode)-handoff/((?:ses_[A-Za-z0-9]+|[0-9a-f-]{36}))-\d{8}-\d{6}\.md')

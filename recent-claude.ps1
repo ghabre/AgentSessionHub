@@ -51,13 +51,12 @@
 # Usage: run under Windows PowerShell, e.g. a shortcut with target:
 #   powershell.exe -NoExit -ExecutionPolicy Bypass -File "C:\path\to\recent-claude.ps1"
 
-# Claude accounts: one session history (~/.claude), several logins. Alt-A cycles the active
-# account (personal CP, work CW, dev CD -- see Get-HubClaudeProfiles in hub-tools.ps1), and
-# every launch, resume and handoff opens in it. work/dev keep only their login in
-# CLAUDE_WORK_CONFIG_DIR / CLAUDE_DEV_CONFIG_DIR (default ~/.claude-work, ~/.claude-dev);
-# link-claude-accounts.sh links the rest of each to ~/.claude at startup. Tabs are labelled
-# CP/CW/CD and colored per account; override with CLAUDE_TAB_COLOR / CLAUDE_WORK_TAB_COLOR /
-# CLAUDE_DEV_TAB_COLOR.
+# Claude accounts: one session history (~/.claude), several logins. ~/.claude is the first
+# account and every ~/.claude-* folder another, keeping only its login; claude-accounts.sh
+# links the rest of each to ~/.claude. Alt-A cycles the active account, named by its login
+# email in the prompt, and every launch, resume and handoff opens in it with the account's
+# tab color. The last Alt-A stop is a new account: the next Claude launch creates
+# ~/.claude-<n>, where Claude asks for the login once.
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
@@ -181,10 +180,9 @@ function New-BashCommand([string[]]$arguments) {
 function Invoke-Git {
     if ($backend -eq 'wsl') { wsl.exe -d $distro -- git @args } else { git @args }
 }
-# The shared history lives in personal's ~/.claude; accounts only change the login.
-$claudeConfigDir = Get-HubClaudeConfigDir 'personal'
-$claude = if ($backend -eq 'wsl') { ConvertFrom-WslPath $claudeConfigDir } else { $claudeConfigDir }
-$claudeConfigDirBash = if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDir } else { $claudeConfigDir }
+# The shared history lives in the first account's ~/.claude; accounts only change the login.
+$claudeConfigDirBash = "$bashHome/.claude"
+$claude = ConvertFrom-WslPath $claudeConfigDirBash
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
 $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
@@ -197,9 +195,9 @@ $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW }
 
 # wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
-# $tool, when given, adds that tool's tab color (see Get-HubTabColorArgs).
-function Open-WtTab($title, $cwd, $command, $tool) {
-    $colorArgs = @(Get-HubTabColorArgs $tool)
+# $color, when given, is the tab color: Claude tabs carry their account's.
+function Open-WtTab($title, $cwd, $command, $color) {
+    $colorArgs = @(if ($color) { '--tabColor', $color })
     if ($backend -eq 'wsl') {
         & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs `
             wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
@@ -283,13 +281,14 @@ $clickBinds = (@"
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
 $expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-a', 'alt-f', 'alt-h', 'alt-s') -join ','
-# Rewritten before every pick so the prompt and header name the active account.
+# Rewritten before every pick so the prompt names the active account, in its tab color.
+# No $script:account means the new-account stop, which will take the next color.
 function Write-FzfScript {
-    $profile = (Get-HubClaudeProfiles)[$script:account]
-    $label = $profile.Label
-    $color = (Get-HubTabColorArgs $profile.Tool)[1]   # the account's tab color, so a switch is visible
-    $others = $claudeAccounts.Count -gt 1
-    $headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($others) { "alt-a: account ($label)" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+    $label = if (-not $script:account) { 'NEW account' }
+             elseif ($script:account.Email) { $script:account.Email -replace "'", '' }   # the prompt is single-quoted
+             else { "$($script:account.Name.TrimStart('.')) (not logged in)" }
+    $color = if ($script:account) { $script:account.Color } else { Get-HubClaudeAccountColor $claudeAccounts.Count }
+    $headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), 'alt-a: next account', 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
     $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -424,26 +423,6 @@ echo "`$out"
 ls -1 "`$dir"/claude-history-*.tar.gz 2>/dev/null | sort | head -n -$backupKeep | xargs -r rm -f
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($backupShWin, $backupSh)
-
-# Point every other existing account at the shared history (link-claude-accounts.sh does
-# the work and never deletes). Runs at each launch/Esc reload, so it also repairs a link
-# that Claude Code replaced with a real file, and finishes an account once its sessions end.
-function Invoke-AccountLinks {
-    $accounts = @(Get-HubClaudeAccounts | Where-Object { $_.Name -ne 'personal' })
-    if (-not $accounts) { return }
-    $dirs = @($accounts | ForEach-Object {
-        $dir = Get-HubClaudeConfigDir $_.Name
-        if ($backend -eq 'windows') { ConvertTo-WslPath $dir } else { $dir }
-    })
-    foreach ($line in @(Invoke-Bash (ConvertTo-WslPath (Join-Path $PSScriptRoot 'link-claude-accounts.sh')) $claudeConfigDirBash @dirs)) {
-        $kind, $path = "$line" -split ':', 2
-        switch ($kind) {
-            'SET_ASIDE'   { Write-Host "Kept aside (now shared from ~/.claude): $path" -ForegroundColor Yellow }
-            'LIVE'        { Write-Host "Not linked yet, it has running Claude sessions: $path -- close them, then press Esc." -ForegroundColor Yellow }
-            'LINK_FAILED' { Write-Host "Could not link $path$(if ($backend -eq 'windows') { ' -- enable Windows Developer Mode for symlinks' })" -ForegroundColor Red }
-        }
-    }
-}
 
 # Runs once per launch; backup.sh itself decides whether one is actually due.
 function Invoke-Backup {
@@ -741,10 +720,9 @@ After every completed repository change, automatically create a local Git commit
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
-    $tabTool = if ($tool -eq 'claude') { (Get-HubClaudeProfiles)[$script:account].Tool } else { $tool }
-    $title = "$(Get-HubTabLabel $tabTool): $name"
+    $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
     $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $script:account } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
-    Open-WtTab $title $path $command $tabTool
+    Open-WtTab $title $path $command $(if ($tool -eq 'claude') { $script:account.Color })
 }
 
 # Read a transcript as an ordered list of chat messages: @{ Role='User'|'Claude'; Body=... }.
@@ -1158,15 +1136,15 @@ function Invoke-CombineCopy($items) {
 # -----------------------------------------------------------------------------------
 
 Invoke-Backup   # no-op unless the newest snapshot is older than $backupEvery hours
-Invoke-AccountLinks
-$claudeAccounts = @(Get-HubClaudeAccounts | ForEach-Object { $_.Name })
+$claudeAccounts = @(Get-HubClaudeAccounts)
+$newAccount = $false   # Alt-A went past the last account: the next Claude launch creates one
 
 $sessions = Update-List
 if (-not $sessions) { Write-Host "No past sessions found under $projects -- use the top row to start a new one." }
 
 while ($true) {
     # Another picker window may have switched accounts; always launch in the saved one.
-    $script:account = Get-HubClaudeActiveAccount $claudeAccounts
+    $script:account = if (-not $newAccount) { Get-HubClaudeActiveAccount $claudeAccounts }
     Write-FzfScript
     # fzf (Linux, via WSL): list in via file, pick out via file, console untouched so
     # keyboard/mouse/resize all reach fzf. Wheel scrolls, a second click on the
@@ -1181,10 +1159,11 @@ while ($true) {
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
     $key    = if ($out.Count) { $out[0].Trim() } else { '' }
     $picked = @($out | Select-Object -Skip 1 | Where-Object { $_ })
-    if ($key -eq 'alt-a') {   # next existing account; history and open tabs are unaffected
-        $claudeAccounts = @(Get-HubClaudeAccounts | ForEach-Object { $_.Name })   # pick up a new folder
-        $next = $claudeAccounts[([array]::IndexOf($claudeAccounts, $script:account) + 1) % $claudeAccounts.Count]
-        Set-HubClaudeActiveAccount $next
+    if ($key -eq 'alt-a') {   # next account, then the new-account stop; history and open tabs are unaffected
+        $claudeAccounts = @(Get-HubClaudeAccounts)   # pick up new folders and logins
+        $index = if ($newAccount) { -1 } else { [array]::IndexOf(@($claudeAccounts.Name), $script:account.Name) }
+        $newAccount = -not $newAccount -and $index -eq $claudeAccounts.Count - 1
+        if (-not $newAccount) { Set-HubClaudeActiveAccount $claudeAccounts[$index + 1] }
         continue
     }
     if ($key -eq 'alt-s') {
@@ -1206,6 +1185,13 @@ while ($true) {
     # For the keys that launch something, the pressed key chooses the tool once, here;
     # everything below just uses $tool. (Alt-F launches nothing and ignores it.)
     $tool = if ($key -eq 'alt-x') { 'codex' } elseif ($key -eq 'alt-o') { 'opencode' } else { 'claude' }
+    if ($newAccount -and $tool -eq 'claude' -and $key -ne 'alt-f') {
+        $known = @($claudeAccounts.Name)
+        $claudeAccounts = @(Get-HubClaudeAccounts -New)
+        $script:account = @($claudeAccounts | Where-Object { $_.Name -notin $known })[0]
+        Set-HubClaudeActiveAccount $script:account
+        $newAccount = $false
+    }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
     # transcripts into one handoff and seed a single new session (enter/transfer key), or one
@@ -1236,8 +1222,7 @@ while ($true) {
         }
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
         if ($tool -ne 'claude')   { Invoke-Handoff $tool $it.Id $it.Cwd $it.Tr $it.Title; continue }
-        $accountTool = (Get-HubClaudeProfiles)[$script:account].Tool
-        $tabTitle = "$(Get-HubTabLabel $accountTool): $(if ($it.Title) { $it.Title } else { $it.Id })"
-        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $script:account) $accountTool
+        $tabTitle = if ($it.Title) { $it.Title } else { $it.Id }
+        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $script:account) $script:account.Color
     }
 }
