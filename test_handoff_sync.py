@@ -9,7 +9,10 @@ import sqlite3
 import tempfile
 import unittest
 
-from handoff_sync import plan
+import contextlib
+import io
+
+from handoff_sync import plan, preview
 
 LINK_SCRIPT = Path(__file__).with_name('claude-accounts.sh')
 
@@ -65,6 +68,19 @@ class TransferTests(unittest.TestCase):
 
     def payload(self, result):
         return Path(result['handoff']).read_text()
+
+    def test_preview_shows_the_last_chat_turns_of_each_tool(self):
+        for tool in ('codex', 'claude', 'opencode'):
+            for turn in range(10):
+                self.append(tool, f'{tool} question {turn}')
+            self.append(tool, f'{tool} answer', role='assistant')
+            root = self.request['opencode_db' if tool == 'opencode' else tool + '_root']
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                preview(tool, root, IDS[tool])
+            shown = out.getvalue()
+            self.assertIn(f'--- assistant ---\n{tool} answer', shown)
+            self.assertIn(f'{tool} question 9', shown)
+            self.assertNotIn(f'{tool} question 2', shown)  # only the last 8 turns
 
     def test_all_six_directions_repeat_and_round_trip(self):
         for source in IDS:
