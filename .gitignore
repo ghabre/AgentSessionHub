@@ -2,3 +2,4 @@
 backups/
 .history/
 .vs/
+__pycache__/
