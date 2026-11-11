@@ -189,9 +189,9 @@ $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW }
 
 # wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
-# $tool, when given, adds that tool's tab color (see Get-HubTabColorArgs).
-function Open-WtTab($title, $cwd, $command, $tool) {
-    $colorArgs = @(Get-HubTabColorArgs $tool)
+# $color, when given, is the tab color: Claude tabs carry their account's.
+function Open-WtTab($title, $cwd, $command, $color) {
+    $colorArgs = @(if ($color) { '--tabColor', $color })
     if ($backend -eq 'wsl') {
         & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs `
             wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
@@ -749,11 +749,10 @@ After every completed repository change, automatically create a local Git commit
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
-    $account = Get-HubClaudeActiveAccount
-    $tabTool = if ($tool -eq 'claude') { (Get-HubClaudeProfiles)[$account].Tool } else { $tool }
-    $title = if ($tool -eq 'opencode') { $name } else { "$(Get-HubTabLabel $tabTool): $name" }
+    $account = if ($tool -eq 'claude') { Get-HubClaudeActiveAccount }
+    $title = if ($tool -eq 'opencode') { $name } else { "${tool}: $name" }
     $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $account } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
-    Open-WtTab $title $path $command $tabTool
+    Open-WtTab $title $path $command $account.Color
 }
 
 # Read one OpenCode session as chat messages: @{ Role='User'|'OpenCode'; Body=... }.

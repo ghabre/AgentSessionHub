@@ -1,14 +1,11 @@
-$claudeConfigDirs = @{}
-foreach ($claudeProfile in (Get-HubClaudeProfiles).Keys) { $claudeConfigDirs[$claudeProfile] = Get-HubClaudeConfigDir $claudeProfile }
-
-# Personal must run with CLAUDE_CONFIG_DIR unset: its account file is ~/.claude.json, which
-# Claude Code only reads when the variable is absent (a set value moves it into the dir).
-function New-HubClaudeCommand($command, [ValidateSet('personal', 'work', 'dev')]$account = 'personal') {
-    if ($account -eq 'personal') {
+# The first account must run with CLAUDE_CONFIG_DIR unset: its account file is ~/.claude.json,
+# which Claude Code only reads when the variable is absent (a set value moves it into the dir).
+function New-HubClaudeCommand($command, $account) {
+    if ($account.Shared) {
         if ($backend -eq 'windows') { return "Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue; " + $command }
         return "unset CLAUDE_CONFIG_DIR; " + $command
     }
-    $configDir = $claudeConfigDirs[$account]
+    $configDir = $account.Dir
     # Escape for the destination shell; wt.exe receives this whole command as one argument.
     if ($backend -eq 'windows') { return "`$env:CLAUDE_CONFIG_DIR = '" + $configDir.Replace("'", "''") + "'; " + $command }
     return "export CLAUDE_CONFIG_DIR='" + $configDir.Replace("'", "'\''") + "'; " + $command
@@ -41,8 +38,8 @@ $syncLaunchWsl = "$tmpWsl/sync-launch.sh"
 $syncLaunch = @'
 #!/bin/bash
 # $1 = target tool, $2 = immutable handoff (empty for plain resume), $3 = native session id,
-# $4 = source tool label, $5 = inherited title, $6 = Claude config directory ('-' = personal,
-# run with it unset). '-' preserves empty positions through
+# $4 = source tool label, $5 = inherited title, $6 = Claude config directory ('-' = first
+# account, run with it unset). '-' preserves empty positions through
 # Windows PowerShell 5's native argument marshalling, which drops empty strings.
 [ "$2" = '-' ] && set -- "$1" "" "$3" "$4" "$5" "$6"
 [ "$3" = '-' ] && set -- "$1" "$2" "" "$4" "$5" "$6"
@@ -102,7 +99,7 @@ function Invoke-HubTransfer($tool, $items, $cwd) {
             preview = $true
         }
         # Every account links its projects/ to ~/.claude, so one root covers them all.
-        $request.claude_root = $(if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDirs.personal } else { $claudeConfigDirs.personal }) + '/projects'
+        $request.claude_root = "$bashHome/.claude/projects"
         Write-Host 'Checking conversation synchronization...'
         $plan = Get-HubTransferPlan $request
         if ($plan.status -eq 'choose') {
@@ -162,9 +159,8 @@ $clickBinds
         $title = $title -replace '[\r\n\]]', ' '
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }
         # Claude opens in the active account; non-Claude targets ignore the config value.
-        $account = if ($tool -eq 'claude') { Get-HubClaudeActiveAccount } else { 'personal' }
-        $configDir = if ($account -eq 'personal') { '-' } else { $claudeConfigDirs[$account] }
-        $tabTool = if ($tool -eq 'claude') { (Get-HubClaudeProfiles)[$account].Tool } else { $tool }
+        $account = if ($tool -eq 'claude') { Get-HubClaudeActiveAccount }
+        $configDir = if ($account -and -not $account.Shared) { $account.Dir } else { '-' }
         $command = New-BashCommand @($syncLaunchWsl, $tool, $handoffArg, $resumeId, $label, $title, $configDir)
         if ($backend -eq 'windows') {
             # Run the CLI in the destination PowerShell profile, just like normal
@@ -199,7 +195,7 @@ if ($data.handoff) {
             $command = "& '" + $nativeLaunchWin.Replace("'", "''") + "'"
         }
         Write-Host $(if ($plan.handoff) { "Continuing with $($plan.count) new messages/tool notes." } else { 'Already synchronized; resuming without adding a prompt.' })
-        Open-WtTab "$(Get-HubTabLabel $tabTool): $title" $cwd $command $tabTool
+        Open-WtTab "${tool}: $title" $cwd $command $account.Color
     } catch {
         Write-Host "Conversation transfer stopped: $($_.Exception.Message)" -ForegroundColor Red
         Start-Sleep -Milliseconds 1800
