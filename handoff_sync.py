@@ -183,6 +183,39 @@ def read_jsonl(path, tool):
     return session
 
 
+def read_opencode(source, sid, cwd='', title=''):
+    session = Session('opencode', sid, cwd, title)
+    for kind, data, seq in source.execute('SELECT type, data, seq FROM session_message WHERE session_id = ? ORDER BY seq', (sid,)):
+        if kind not in ('user', 'assistant'):
+            continue
+        message = json.loads(data)
+        session.add(kind, (message.get('text') or '') if kind == 'user' else text_blocks(message.get('content')), f'{sid}:{seq}')
+        for block in message.get('content') or []:
+            if isinstance(block, dict) and block.get('type') == 'tool':
+                state = block.get('state') or {}
+                session.note(block.get('name', 'tool'), state.get('input'))
+                session.failure(text_blocks(state.get('content')))
+    return session
+
+
+def preview(tool, root, sid):
+    """Print the last chat turns of one session for the pickers' preview pane.
+
+    root is the same store the transfer request names: a transcript tree, or opencode.db.
+    """
+    root = Path(native_path(root))
+    if tool == 'opencode':
+        with closing(sqlite3.connect(root.as_uri() + '?mode=ro', uri=True)) as source:
+            events = read_opencode(source, sid).events
+    else:
+        # A Codex thread can span several dated segments; sorted paths keep them in order.
+        events = [event for path in sorted(root.rglob('*' + sid + '.jsonl')) if 'subagents' not in path.parts
+                  for event in read_jsonl(path, tool).events]
+    for event in [e for e in events if e['role'] in ('user', 'assistant')][-8:]:
+        text = event['text'] if len(event['text']) <= 1500 else event['text'][:1500] + ' ...'
+        print('--- ' + event['role'] + ' ---\n' + text + '\n')
+
+
 def read_sessions(request, db):
     sessions = {}
     for tool in ('codex', 'claude'):
@@ -214,19 +247,9 @@ def read_sessions(request, db):
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as source:
             for sid, cwd, title, updated, parent, archived in source.execute(
                     'SELECT id, directory, title, time_updated, parent_id, time_archived FROM session_v2'):
-                session = Session('opencode', sid, cwd or '', title or '')
+                session = read_opencode(source, sid, cwd or '', title or '')
                 session.active = parent is None and archived is None
                 session.updated = updated * 1000000
-                for kind, data, seq in source.execute('SELECT type, data, seq FROM session_message WHERE session_id = ? ORDER BY seq', (sid,)):
-                    if kind not in ('user', 'assistant'):
-                        continue
-                    message = json.loads(data)
-                    session.add(kind, (message.get('text') or '') if kind == 'user' else text_blocks(message.get('content')), f'{sid}:{seq}')
-                    for block in message.get('content') or []:
-                        if isinstance(block, dict) and block.get('type') == 'tool':
-                            state = block.get('state') or {}
-                            session.note(block.get('name', 'tool'), state.get('input'))
-                            session.failure(text_blocks(state.get('content')))
                 sessions[session.key] = session
     # Claude background continuations inherit their predecessor's known history.
     for session in list(sessions.values()):
@@ -456,6 +479,9 @@ def plan(request):
 
 
 def main():
+    if sys.argv[1] == 'preview':
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        return preview(*sys.argv[2:5])
     request_path, result_path = (native_path(value) for value in sys.argv[1:3])
     with open(request_path, encoding='utf-8-sig') as stream:
         request = json.load(stream)

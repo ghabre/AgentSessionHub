@@ -19,7 +19,7 @@ OpenCode stores all projects in one SQLite database (`~/.local/share/opencode/op
 
 ## Paired Script Changes
 
-Treat `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` as mirrored implementations. Apply changes to picker behavior, handoffs, clipboard export, backups, WSL integration, and launch flow symmetrically. Preserve intentional product-specific differences: command names, data directories, storage formats (JSONL transcripts vs. `opencode.db`), prompts, and environment-variable prefixes. State how parity was verified; explain any one-script-only change.
+Treat `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` as mirrored implementations. Apply changes to picker behavior, handoffs, previews, backups, WSL integration, and launch flow symmetrically. Preserve intentional product-specific differences: command names, data directories, storage formats (JSONL transcripts vs. `opencode.db`), prompts, and environment-variable prefixes. State how parity was verified; explain any one-script-only change.
 
 ## Build, Test, and Development Commands
 
@@ -40,7 +40,7 @@ $errors = $null
 $errors
 ```
 
-An empty result means parsing succeeded. Functional testing requires Windows, WSL2, Linux `fzf`, and the relevant CLI for the default backend; the windows backend needs Git for Windows, Windows `fzf`, PowerShell 7 and the native CLI instead. OpenCode support additionally needs Python 3 with SQLite. Changes to shared paths should keep both backends working. `pandoc` is required only for formatted clipboard export.
+An empty result means parsing succeeded. Functional testing requires Windows, WSL2, Linux `fzf`, and the relevant CLI for the default backend; the windows backend needs Git for Windows, Windows `fzf`, PowerShell 7 and the native CLI instead. OpenCode support additionally needs Python 3 with SQLite. Changes to shared paths should keep both backends working.
 
 ## Coding Style & Naming Conventions
 
@@ -48,7 +48,7 @@ Use four-space indentation in PowerShell blocks. Follow existing PowerShell conv
 
 ## Testing Guidelines
 
-No automated test suite or coverage target is present. Parser-check every modified `.ps1`, then manually exercise the affected picker action in all three session pickers: new session, resume, Alt-X/Alt-C/Alt-O handoff, Alt-F export, multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
+No automated test suite or coverage target is present. Parser-check every modified `.ps1`, then manually exercise the affected picker action in all three session pickers: new session, resume, Alt-X/Alt-C/Alt-O handoff, preview pane (Alt-P), multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
 
 ## Commit & Pull Request Guidelines
 

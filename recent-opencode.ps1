@@ -18,8 +18,7 @@
 # unseen messages and tool notes. Multiple branches require a destination choice.
 # A repeated transfer with no new material resumes without adding a prompt.
 # Tab marks multiple sessions; Enter or a transfer key continues their combined
-# conversation, reusing the existing result when known. Alt-F copies one or more
-# selected chats as formatted HTML plus markdown (requires pandoc).
+# conversation, reusing the existing result when known.
 # Transfer state and immutable payloads live in the gitignored .history folder beside this script,
 # separately for each backend/distro. Keep this directory to preserve synchronization.
 #
@@ -33,7 +32,7 @@
 #   wsl     : OpenCode installed INSIDE WSL; the requirements below apply as written.
 #   windows : OpenCode installed natively (data under %LOCALAPPDATA%\opencode or the
 #             directory `opencode debug paths` reports). The same helper scripts run under
-#             Git for Windows' bash; fzf, pandoc, Python and the other CLIs come from the
+#             Git for Windows' bash; fzf, Python and the other CLIs come from the
 #             Windows PATH, and tabs open in PowerShell 7, whose profile supplies per-shell
 #             tools such as fnm's codex. No WSL is used.
 #
@@ -46,7 +45,6 @@
 #   - Python 3.8+ -- reads opencode.db and tracks conversation handoffs. apt: `sudo apt install python3`.
 #   - `opencode` reachable from the WSL login shell (bash -lic).
 #   - `codex` / `claude` likewise, but only if you use the Alt-X / Alt-C handoff.
-#   - `pandoc` in WSL, but only for the Alt-F clipboard export. apt: `sudo apt install pandoc`.
 #
 # Auto-detected (no per-machine editing needed): the default WSL distro, the fzf path, and
 # the OpenCode data directory and database (respecting OPENCODE_DB and XDG_DATA_HOME).
@@ -274,8 +272,8 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in opencode, hand the session off to codex/claude, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($claudeEnabled) { 'alt-c' }), 'alt-f', 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) { 'alt-c: claude' }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($claudeEnabled) { 'alt-c' }), 'alt-h', 'alt-s') -join ','
+$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) { 'alt-c: claude' }), 'alt-h: hide', 'alt-s: show', 'alt-p: preview', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -284,6 +282,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --multi \
     --expect=$expectKeys \
 $clickBinds
+$(Get-HubPreviewOptions "$opencodeDbWsl")
     --prompt='opencode sessions> ' --reverse \
     --header='$headerActions' \
     > "`$2"
@@ -417,60 +416,6 @@ $clickBinds
 [System.IO.File]::WriteAllText($fzfDirShWin, $fzfDirSh)
 # -----------------------------------------------------------------------------------
 
-# export-session.py: read one session's messages from opencode.db directly (~8ms) and
-# emit only the compact fields Get-ChatMessages / Get-HandoffStateMarkdown use, without
-# booting the OpenCode runtime or sending megabytes of raw tool output through ConvertFrom-Json.
-$exportPyWin = Join-Path $tmpWin 'export-session.py'; $exportPyWsl = "$tmpWsl/export-session.py"
-$exportPy = @'
-import json, os, re, sqlite3, sys
-
-db, sid, out_path = sys.argv[1], sys.argv[2], sys.argv[3]
-if not os.path.isfile(db):
-    sys.exit(1)
-
-err_pat = re.compile(r'(?im)^(error|failed|exception|traceback|.*\b(denied|not found|cannot|unable)\b)')
-stat_pat = re.compile(r'(?i)error|fail|abort|cancel')
-
-conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-messages = []
-for msg_type, data in conn.execute(
-        "SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq ASC",
-        (sid,)):
-    if msg_type not in ("user", "assistant"):
-        continue
-    try:
-        msg = json.loads(data)
-    except Exception:
-        continue
-    if not isinstance(msg, dict):
-        continue
-    created = (msg.get("time") or {}).get("created")
-    if msg_type == "user":
-        messages.append({"type": "user", "time": {"created": created}, "text": msg.get("text") or ""})
-        continue
-    blocks = []
-    for b in msg.get("content") or []:
-        if not isinstance(b, dict):
-            continue
-        btype = b.get("type")
-        if btype == "text":
-            blocks.append({"type": "text", "text": b.get("text") or ""})
-        elif btype == "tool":
-            st = b.get("state") or {}
-            inp = st.get("input") if isinstance(st.get("input"), dict) else {}
-            slim_in = {k: inp[k] for k in ("file_path", "path", "notebook_path", "url", "pattern", "glob", "command") if inp.get(k)}
-            txt = "\n".join(c.get("text", "") for c in (st.get("content") or []) if isinstance(c, dict) and c.get("type") == "text").strip()
-            status = str(st.get("status") or "")
-            keep = bool(txt) and (bool(stat_pat.search(status)) or bool(err_pat.search(txt)))
-            slim_content = [{"type": "text", "text": txt[:700] + (" ..." if len(txt) > 700 else "")}] if keep else []
-            blocks.append({"type": "tool", "name": b.get("name") or "", "state": {"status": status, "input": slim_in, "content": slim_content}})
-    messages.append({"type": "assistant", "time": {"created": created}, "content": blocks})
-
-with open(out_path, "w", encoding="utf-8", newline="\n") as f:
-    json.dump({"messages": messages}, f)
-'@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($exportPyWin, $exportPy)
-$exportJsonWin = Join-Path $tmpWin 'export.json'; $exportJsonWsl = "$tmpWsl/export.json"
 
 # --- Database backup ---------------------------------------------------------------
 # opencode.db is the only record of past sessions and it lives inside the WSL VHD, so
@@ -755,355 +700,9 @@ After every completed repository change, automatically create a local Git commit
     Open-WtTab $title $path $command $account.Color
 }
 
-# Read one OpenCode session as chat messages: @{ Role='User'|'OpenCode'; Body=... }.
-#
-# opencode.db stores each message's payload as JSON. export-session.py reads the rows
-# directly in ~8ms and emits the same message structure `opencode session export` uses,
-# without starting the OpenCode CLI. It is loaded once per flow and shared by the handoff,
-# clipboard and combine paths, so all three can never drift apart on what counts as a message.
-#
-# What survives: user and assistant prose, in order. What's dropped, deliberately --
-#   tool blocks            : stale snapshots; a reader/agent re-reads the live files
-#   reasoning              : internal model reasoning, not decisions
-#   synthetic / system     : harness instructions the user never typed
-#   idle / model-switched  : bookkeeping records, not conversation
-function Get-OpenCodeExport($id) {
-    Remove-Item $exportJsonWin -ErrorAction SilentlyContinue
-    Invoke-Bash $pyShWsl $exportPyWsl $opencodeDbWsl $id $exportJsonWsl | Out-Null
-    if (-not (Test-Path $exportJsonWin)) { return $null }
-    try { return (Get-Content $exportJsonWin -Raw | ConvertFrom-Json) } catch { return $null }
-}
-
-
-function Get-MessageText($message) {
-    if ($message.type -eq 'user') { return "$($message.text)" }
-    if ($message.type -eq 'assistant') {
-        return (@($message.content | Where-Object { $_.type -eq 'text' } | ForEach-Object { "$($_.text)" }) -join "`n`n")
-    }
-    return ''
-}
-
-function Get-ChatMessages($export) {
-    $msgs = New-Object System.Collections.ArrayList
-    if (-not $export) { return $msgs }
-    foreach ($m in @($export.messages)) {
-        if ($m.type -ne 'user' -and $m.type -ne 'assistant') { continue }
-        $body = (Get-MessageText $m).Trim()
-        # Harness-injected blocks the user never wrote.
-        $body = [regex]::Replace($body, '(?s)<system-reminder>.*?</system-reminder>', '')
-        $body = [regex]::Replace($body, '(?s)<local-command-(stdout|stderr)>.*?</local-command-\1>', '')
-        $body = $body.Trim()
-        if (-not $body) { continue }
-        [void]$msgs.Add([pscustomobject]@{
-            Role = $(if ($m.type -eq 'user') { 'User' } else { 'OpenCode' })
-            Body = $body
-        })
-    }
-    return $msgs
-}
-
-# Compact state pack for formatted clipboard exports; verify snapshots against live files.
-function Get-HandoffStateMarkdown($export, $label) {
-    $lastUser = $null; $lastAssistant = $null
-    $calls = New-Object System.Collections.ArrayList
-    $files = New-Object System.Collections.ArrayList
-    $snips = New-Object System.Collections.ArrayList
-
-    if ($export) {
-        foreach ($m in @($export.messages)) {
-            $body = (Get-MessageText $m).Trim()
-            $body = [regex]::Replace($body, '(?s)<system-reminder>.*?</system-reminder>', '')
-            $body = [regex]::Replace($body, '(?s)<local-command-(stdout|stderr)>.*?</local-command-\1>', '')
-            $body = $body.Trim()
-            if ($body) {
-                if ($m.type -eq 'user') { $lastUser = $body }
-                elseif ($m.type -eq 'assistant') { $lastAssistant = $body }
-            }
-
-            if ($m.type -ne 'assistant') { continue }
-            foreach ($b in @($m.content | Where-Object { $_.type -eq 'tool' })) {
-                $name = "$($b.name)"; $input = $b.state.input; $detail = $null
-                foreach ($k in @('file_path','path','notebook_path','url','pattern','glob','command')) {
-                    if ($input -and $input.PSObject.Properties.Name -contains $k -and $input.$k) { $detail = "$($input.$k)"; break }
-                }
-                $summary = if ($detail) { "${name}: $detail" } else { $name }
-                if ($calls.Count -lt 30) { [void]$calls.Add($summary) }
-                foreach ($k in @('file_path','path','notebook_path')) {
-                    if ($input -and $input.PSObject.Properties.Name -contains $k -and $input.$k) { [void]$files.Add("$($input.$k)") }
-                }
-
-                $content = (@($b.state.content | Where-Object { $_.type -eq 'text' } | ForEach-Object { "$($_.text)" }) -join "`n").Trim()
-                if (-not $content) { continue }
-                $failed = "$($b.state.status)" -match '(?i)error|fail|abort|cancel'
-                $interesting = $failed -or $content -match '(?im)^(error|failed|exception|traceback|.*\b(denied|not found|cannot|unable)\b)'
-                if ($interesting -and $snips.Count -lt 8) {
-                    if ($content.Length -gt 700) { $content = $content.Substring(0,700) + ' ...' }
-                    [void]$snips.Add($content)
-                }
-            }
-        }
-    }
-
-    $out = New-Object System.Collections.ArrayList
-    [void]$out.Add("## Handoff State Pack")
-    [void]$out.Add("")
-    [void]$out.Add("This is not a true resume. It is a compact recovery map extracted from the $label session. Verify live files before relying on any quoted content.")
-    if ($lastUser) { [void]$out.Add(""); [void]$out.Add("### Last User Ask"); [void]$out.Add(""); [void]$out.Add((Limit-HandoffText $lastUser)) }
-    if ($lastAssistant) { [void]$out.Add(""); [void]$out.Add("### Last Assistant Message"); [void]$out.Add(""); [void]$out.Add((Limit-HandoffText $lastAssistant)) }
-    $uniqFiles = @($files | Where-Object { $_ } | Select-Object -Unique | Select-Object -First 30)
-    if ($uniqFiles) { [void]$out.Add(""); [void]$out.Add("### Files Touched Or Mentioned By Tools"); [void]$out.Add(""); foreach ($f in $uniqFiles) { [void]$out.Add("- ``$f``") } }
-    if ($calls.Count) { [void]$out.Add(""); [void]$out.Add("### Recent Tool/Command Calls"); [void]$out.Add(""); foreach ($c in @($calls | Select-Object -Last 30)) { [void]$out.Add("- $c") } }
-    if ($snips.Count) { [void]$out.Add(""); [void]$out.Add("### Error/Failure Snippets"); [void]$out.Add(""); foreach ($s in $snips) { [void]$out.Add('```text'); [void]$out.Add($s); [void]$out.Add('```') } }
-    [void]$out.Add(""); [void]$out.Add("## Chat Transcript")
-    return ($out.ToArray() -join "`n")
-}
-
-
-function Limit-HandoffText($text, $max = 3000) {
-    if (-not $text) { return $text }
-    if ($text.Length -le $max) { return $text }
-    return $text.Substring(0, $max) + " ...`n[truncated in state pack; read transcript below for full context]"
-}
-# Messages -> markdown. '## User' / '## OpenCode' is the canonical rendering: it IS the
-# handoff, it IS the clipboard's plain-text flavour, and pandoc turns it into the HTML
-# flavour -- so all three stay in step by construction.
-function ConvertTo-ChatMarkdown($msgs) {
-    $out = New-Object System.Collections.ArrayList
-    foreach ($m in $msgs) {
-        [void]$out.Add("")
-        [void]$out.Add("## $($m.Role)")
-        [void]$out.Add("")
-        [void]$out.Add($m.Body)
-    }
-    return ($out.ToArray() -join "`n")
-}
-
-
 function Invoke-Handoff($tool, $id, $cwd, $title) {
     Invoke-HubTransfer $tool @([pscustomobject]@{ Id = $id; Title = $title; Cwd = $cwd }) $cwd
 }
-
-# --- Alt-F: formatted chat export to the clipboard ---------------------------------
-# Puts the chat on the clipboard in TWO flavours at once, so the paste target decides:
-# rich HTML for Word/Outlook/OneNote/Slack, and the markdown itself as the plain-text
-# fallback for a textarea or another AI chat. Both are rendered from the same markdown.
-#
-# Note on the ANSI/`script -qefc | aha` approach: that captures colour out of a LIVE pty.
-# These rows are finished sessions stored as plain JSON on disk -- there is no scrollback
-# to capture and not one escape byte to convert, and re-running a session to produce
-# colour would cost Claude tokens. So the colour is applied here at render time instead.
-Add-Type -AssemblyName System.Windows.Forms
-
-# pandoc.sh: markdown -> html. --no-highlight keeps code blocks as plain <pre><code>;
-# pandoc's highlighter emits class-based spans, and classes are exactly what the styling
-# below can't rely on (see Add-InlineStyle).
-#
-# Pandoc's markdown is tuned for documents; a chat log is full of shell/PowerShell prose
-# that it misreads. Each extension below is switched OFF for a failure actually observed
-# exporting this project's own transcripts:
-#   yaml_metadata_block   : the '---' rule under the preamble read as a YAML block start,
-#                           and pandoc aborted with a parse error instead of exporting.
-#   tex_math_dollars      : '$tmpWin ... $tmpWsl' read as TeX math -- a PowerShell chat is
-#   tex_math_single_...   : nothing BUT $vars, so this mangled entire messages.
-#   raw_tex               : same family; keeps stray backslashes literal.
-#   raw_html              : chat about HTML quotes tags in prose; left on, pandoc passes
-#                           them through and they RENDER in the paste. Off, they stay text.
-#   citations             : '@claude' / '@ghabre' would be parsed as citation keys.
-#   subscript/superscript : '~/.claude ... ~/.local' -- two paths on one line pair their
-#                           tildes into a subscript and the text between them vanishes.
-#   smart                 : keeps '--' as '--' rather than an en dash, so flags and
-#                           commands quoted outside backticks survive the round trip.
-# auto_identifiers stays ON: the <h2 id="user"> slugs are how speaker labels are found.
-$pandocShWin = Join-Path $tmpWin 'pandoc.sh'; $pandocShWsl = "$tmpWsl/pandoc.sh"
-$pandocSh = @"
-#!/bin/bash
-# `$1 = markdown in, `$2 = html out
-pandoc -t html --no-highlight --wrap=none \
-    -f markdown-yaml_metadata_block-raw_html-raw_tex-tex_math_dollars-tex_math_single_backslash-citations-subscript-superscript-smart \
-    "`$1" -o "`$2"
-"@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($pandocShWin, $pandocSh)
-$exportMdWin   = Join-Path $tmpWin 'export.md';   $exportMdWsl   = "$tmpWsl/export.md"
-$exportHtmlWin = Join-Path $tmpWin 'export.html'; $exportHtmlWsl = "$tmpWsl/export.html"
-
-# Terminal look, light background: monospace throughout, colour-coded speaker labels.
-#
-# Two rules, both learned from what Word actually does with a paste:
-#
-# 1. Styles are INLINE, never a <style> block. Word and Outlook parse a stylesheet
-#    erratically and Gmail strips it outright; a style attribute is honoured everywhere.
-#    That rules out class-based styling, hence the tag rewriting below.
-#
-# 2. Character formatting (colour, font) must sit on the element that DIRECTLY contains
-#    the text -- Word's HTML importer does not cascade it down from an ancestor the way a
-#    browser does. Styling a wrapper <div> and letting the text inherit looks perfect in a
-#    browser and pastes into Word with the font and colour silently dropped; only the
-#    <pre> survived, because its shading applies to the paragraph holding the text. So
-#    $cssText is repeated onto every text-bearing tag, and the speaker label carries its
-#    colour on an inner <span> rather than on its <div>.
-$fontStack = "Consolas,'Cascadia Mono','Courier New',monospace"
-$cssText   = "font-family:$fontStack;font-size:13px;color:#1f2328;"
-$cssCode   = "font-family:$fontStack;font-size:12.5px;"
-# 'inherit' is avoided everywhere below for the same reason as rule 2: Word resolves it
-# against its own defaults, not the ancestor we meant, and drops back to a proportional font.
-$cssPre    = "background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:10px;margin:0 0 12px 0;white-space:pre-wrap;line-height:1.45;$cssCode"
-$cssTag    = [ordered]@{
-    'p'          = "$cssText margin:0 0 10px 0;"
-    'ul'         = "margin:0 0 10px 0;padding-left:22px;"
-    'ol'         = "margin:0 0 10px 0;padding-left:22px;"
-    'li'         = "$cssText margin:0 0 4px 0;"
-    'h1'         = "font-family:$fontStack;color:#1f2328;font-size:16px;margin:0 0 10px 0;"
-    'h2'         = "font-family:$fontStack;color:#1f2328;font-size:14px;margin:16px 0 8px 0;"
-    'h3'         = "font-family:$fontStack;color:#1f2328;font-size:13px;margin:14px 0 6px 0;"
-    'blockquote' = "margin:0 0 10px 0;padding-left:10px;border-left:3px solid #d0d7de;"
-    'hr'         = "border:0;border-top:1px solid #d0d7de;margin:14px 0;"
-    'table'      = "border-collapse:collapse;margin:0 0 10px 0;"
-    'th'         = "$cssText border:1px solid #d0d7de;padding:4px 8px;text-align:left;"
-    'td'         = "$cssText border:1px solid #d0d7de;padding:4px 8px;"
-}
-
-# Add style="..." to every <tag> pandoc emitted, preserving any attributes it already set.
-function Add-InlineStyle($html, $tag, $css) {
-    [regex]::Replace($html, "<$tag(?![a-z])([^>]*)>", { "<$tag$($args[0].Groups[1].Value) style=`"$css`">" })
-}
-
-# Markdown -> styled HTML fragment. Order matters: <pre> and the <code> inside it are
-# styled first so the inline-code rule can then match only the <code> tags left over --
-# a code pill's padding and border would look wrong wrapped around a whole code block.
-function ConvertTo-StyledHtml($markdown) {
-    [System.IO.File]::WriteAllText($exportMdWin, $markdown)
-    Remove-Item $exportHtmlWin -ErrorAction SilentlyContinue
-    Invoke-Bash $pandocShWsl $exportMdWsl $exportHtmlWsl | Out-Null
-    if (-not (Test-Path $exportHtmlWin)) { return $null }
-    $h = [System.IO.File]::ReadAllText($exportHtmlWin)
-
-    # Speaker labels. pandoc slugs '## User' into <h2 id="user">, repeats as id="user-2"...
-    # so the id is a reliable handle for "this h2 is a speaker" that no message body can
-    # forge -- ids are generated, not authored.
-    #
-    # The colour goes on an inner <span>, not on the <div>: on the div, Word keeps the
-    # spacing and throws the colour away (see rule 2 above), which is exactly how these
-    # labels pasted out black.
-    foreach ($sp in @(@{ n='user'; c='#1b7f3b' }, @{ n='opencode'; c='#6f42c1' })) {
-        $label = (Get-Culture).TextInfo.ToTitleCase($sp.n)
-        $h = [regex]::Replace($h, "<h2 id=`"$($sp.n)(-\d+)?`">$label</h2>",
-            "<div style=`"margin:16px 0 6px 0;`"><span style=`"font-family:$fontStack;font-size:13px;font-weight:bold;color:$($sp.c);`">$label</span></div>")
-    }
-    $h = Add-InlineStyle $h 'pre' $cssPre
-    # <code> inside <pre> is the element actually holding the code text, so it needs the
-    # font spelled out; it only has to shed the pill look the inline-code rule would give it.
-    $h = [regex]::Replace($h, '(<pre[^>]*>)<code(?![a-z])([^>]*)>', "`$1<code`$2 style=`"background:none;border:0;padding:0;color:#1f2328;$cssCode`">")
-    $h = [regex]::Replace($h, '<code(?![a-z])(?![^>]*style=)([^>]*)>', "<code`$1 style=`"background:#f6f8fa;border:1px solid #d0d7de;border-radius:4px;padding:0 3px;color:#1f2328;$cssCode`">")
-    foreach ($t in $cssTag.Keys) { $h = Add-InlineStyle $h $t $cssTag[$t] }
-    # The wrapper is for browsers and web editors, which DO cascade; Word ignores it and
-    # reads the per-element styles above instead.
-    return "<div style=`"font-family:$fontStack;font-size:13px;line-height:1.5;color:#1f2328;`">$h</div>"
-}
-
-# Escape every non-ASCII character as a numeric character reference.
-#
-# Not cosmetic -- it's a correctness fix. .NET Framework hands the HTML flavour to Windows
-# in the system ANSI codepage, NOT UTF-8, so anything outside ASCII is written as a literal
-# '?': the arrows, em dashes and box-drawing that fill these transcripts all arrived at the
-# paste target as '?/?'. Entities keep the payload pure ASCII, which that encoding can't
-# damage, and every HTML target decodes them back. It also makes the CF_HTML offsets exact,
-# since one char is then one byte. (The plain-text flavour is unaffected: it goes over
-# CF_UNICODETEXT, which .NET does handle as Unicode.)
-function ConvertTo-AsciiHtml($s) {
-    $sb = New-Object System.Text.StringBuilder
-    for ($i = 0; $i -lt $s.Length; $i++) {
-        $ch = $s[$i]
-        if ([int]$ch -le 127) { [void]$sb.Append($ch); continue }
-        # A surrogate pair (emoji) is ONE code point spread over two chars -- emit it as
-        # one reference, or the paste target sees two broken halves.
-        if ([char]::IsHighSurrogate($ch) -and ($i + 1) -lt $s.Length -and [char]::IsLowSurrogate($s[$i+1])) {
-            [void]$sb.AppendFormat('&#x{0:X};', [char]::ConvertToUtf32($ch, $s[$i+1])); $i++
-        } else {
-            [void]$sb.AppendFormat('&#x{0:X};', [int]$ch)
-        }
-    }
-    return $sb.ToString()
-}
-
-# Wrap a fragment in the CF_HTML descriptor Windows requires. .NET does NOT add this --
-# Clipboard.SetText(html, TextDataFormat.Html) hands the raw string over and rich targets
-# then reject it. The four offsets are BYTE counts into the payload, and the header is
-# fixed-width (D10) so measuring it before filling it in is safe.
-function New-CfHtml($fragment) {
-    $fragment = ConvertTo-AsciiHtml $fragment
-    $pre = "<html><body><!--StartFragment-->"; $post = "<!--EndFragment--></body></html>"
-    $hdr = "Version:0.9`r`nStartHTML:{0:D10}`r`nEndHTML:{1:D10}`r`nStartFragment:{2:D10}`r`nEndFragment:{3:D10}`r`n"
-    $b   = [System.Text.Encoding]::UTF8
-    $sH  = $b.GetByteCount(($hdr -f 0,0,0,0))
-    $sF  = $sH + $b.GetByteCount($pre)
-    $eF  = $sF + $b.GetByteCount($fragment)
-    $eH  = $eF + $b.GetByteCount($post)
-    ($hdr -f $sH,$eH,$sF,$eF) + $pre + $fragment + $post
-}
-
-# Alt-F: copy this conversation to the clipboard, formatted.
-function Invoke-CopyExport($id, $cwd) {
-    Write-Host "Formatting chat for the clipboard..." -NoNewline
-    $export = Get-OpenCodeExport $id
-    $msgs = @(Get-ChatMessages $export)
-    if (-not $msgs) {
-        Write-Host "`r                                    `r" -NoNewline
-        Write-Host "Nothing to copy: no chat messages in $id"; Start-Sleep -Milliseconds 900; return
-    }
-    # One markdown document: it is both the plain-text flavour and pandoc's input.
-    $md = (@(
-        "# OpenCode chat"
-        ""
-        "- Session: ``$id``"
-        "- Folder: ``$cwd``"
-        "- Exported: $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-        ""
-        "Includes a compact state pack plus chat transcript. Tool outputs may be abbreviated."
-        ""
-        "---"
-    ) -join "`n") + "`n" + (Get-HandoffStateMarkdown $export 'OpenCode') + "`n" + (ConvertTo-ChatMarkdown $msgs) + "`n"
-
-    $frag = ConvertTo-StyledHtml $md
-    Write-Host "`r                                    `r" -NoNewline
-    if (-not $frag) { Write-Host "pandoc failed -- is it installed for the $backend backend?"; Start-Sleep -Milliseconds 1200; return }
-
-    $obj = New-Object System.Windows.Forms.DataObject
-    $obj.SetData([System.Windows.Forms.DataFormats]::Html, (New-CfHtml $frag))
-    $obj.SetData([System.Windows.Forms.DataFormats]::UnicodeText, $md)
-    # $true = keep it on the clipboard after this process exits.
-    [System.Windows.Forms.Clipboard]::SetDataObject($obj, $true)
-    Write-Host ("Copied {0} messages -- formatted (HTML + markdown)" -f $msgs.Count)
-    Start-Sleep -Milliseconds 700
-}
-# -----------------------------------------------------------------------------------
-
-# --- Combined clipboard export and transfer entry points ----------------------------
-
-# Render the marked sessions as one markdown body of '# Thread N' sections. Returns
-# @{ Body=<markdown>; Count=<threads with chat> }, or $null if none had any messages.
-function Build-CombinedThreads($items) {
-    $body = New-Object System.Collections.ArrayList
-    $n = 0
-    foreach ($it in $items) {
-        $export = Get-OpenCodeExport $it.Id
-        $msgs = @(Get-ChatMessages $export)
-        if (-not $msgs) { continue }
-        $n++
-        $folder = (($it.Cwd -replace '\\','/') -split '/' | Select-Object -Last 2) -join '/'
-        [void]$body.Add("")
-        [void]$body.Add("# Thread $n -- $folder")
-        [void]$body.Add("")
-        [void]$body.Add("- Session id: ``$($it.Id)``")
-        [void]$body.Add("- Working dir: ``$($it.Cwd)``")
-        [void]$body.Add("")
-        [void]$body.Add("---")
-        [void]$body.Add((Get-HandoffStateMarkdown $export 'OpenCode'))
-        [void]$body.Add((ConvertTo-ChatMarkdown $msgs))
-    }
-    if ($n -eq 0) { return $null }
-    return @{ Body = ($body.ToArray() -join "`n"); Count = $n }
-}
-
 
 # Pick the folder the combined session runs in. The marked sessions may span different
 # repos, so choose among THEIR own cwds (not the whole new-session root): one distinct cwd
@@ -1128,38 +727,6 @@ function Invoke-CombineSession($items, $tool) {
     Invoke-HubTransfer $tool $items $items[0].Cwd
 }
 
-# alt-f on 2+ marked rows: one combined formatted copy to the clipboard (opens nothing).
-function Invoke-CombineCopy($items) {
-    Write-Host "Formatting combined chats for the clipboard..." -NoNewline
-    $r = Build-CombinedThreads $items
-    if (-not $r) {
-        Write-Host "`r                                            `r" -NoNewline
-        Write-Host "Nothing to copy: no chat messages in the marked sessions"; Start-Sleep -Milliseconds 900; return
-    }
-    $head = @(
-        "# Combined OpenCode chats"
-        ""
-        "- Threads: $($r.Count)"
-        "- Exported: $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-        ""
-        "Includes a compact state pack plus chat transcript. Tool outputs may be abbreviated."
-        ""
-        "==="
-    ) -join "`n"
-    $md   = $head + "`n" + $r.Body + "`n"
-    $frag = ConvertTo-StyledHtml $md
-    Write-Host "`r                                            `r" -NoNewline
-    if (-not $frag) { Write-Host "pandoc failed -- is it installed for the $backend backend?"; Start-Sleep -Milliseconds 1200; return }
-
-    $obj = New-Object System.Windows.Forms.DataObject
-    $obj.SetData([System.Windows.Forms.DataFormats]::Html, (New-CfHtml $frag))
-    $obj.SetData([System.Windows.Forms.DataFormats]::UnicodeText, $md)
-    [System.Windows.Forms.Clipboard]::SetDataObject($obj, $true)
-    Write-Host ("Copied {0} threads -- formatted (HTML + markdown)" -f $r.Count)
-    Start-Sleep -Milliseconds 700
-}
-# -----------------------------------------------------------------------------------
-
 Invoke-Backup   # no-op unless the newest snapshot is older than $backupEvery hours
 
 $sessions = Update-List
@@ -1172,7 +739,7 @@ while ($true) {
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     Invoke-Bash $fzfShWsl $listWsl $pickWsl
 
-    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-x', 'alt-c', 'alt-f',
+    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-x', 'alt-c',
     # 'alt-h', or 'alt-s') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
@@ -1196,28 +763,22 @@ while ($true) {
     # Open each pick as its own tab in the correct folder, resumed.
     # bash -lic loads the login profile so PATH includes opencode.
     # For the keys that launch something, the pressed key chooses the tool once, here;
-    # everything below just uses $tool. (Alt-F launches nothing and ignores it.)
+    # everything below just uses $tool.
     $tool = if ($key -eq 'alt-x') { 'codex' } elseif ($key -eq 'alt-c') { 'claude' } else { 'opencode' }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
-    # chats into one handoff and seed a single new session (enter/transfer key), or one
-    # combined clipboard copy (alt-f). The __NEW__ row can't be combined, so drop it first.
+    # chats into one handoff and seed a single new session (enter/transfer key). The __NEW__ row can't be combined, so drop it first.
     $items = @(foreach ($row in $picked) {
         $p = $row -split "`t"
         [pscustomobject]@{ Id = $p[1]; Cwd = $p[2]; Title = $p[4] }
     })
     $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
     if ($realItems.Count -ge 2) {
-        if ($key -eq 'alt-f') { Invoke-CombineCopy $realItems }
-        else                  { Invoke-CombineSession $realItems $tool }
+        Invoke-CombineSession $realItems $tool
         continue
     }
 
     foreach ($it in $items) {
-        if ($key -eq 'alt-f') {   # copy to clipboard, open nothing
-            if ($it.Id -eq '__NEW__') { Write-Host "Nothing to copy: that row starts a new session."; Start-Sleep -Milliseconds 900; continue }
-            Invoke-CopyExport $it.Id $it.Cwd; continue
-        }
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
         if ($tool -ne 'opencode') { Invoke-Handoff $tool $it.Id $it.Cwd $it.Title; continue }
         $tabTitle = if ($it.Title) { "opencode: $($it.Title)" } else { "opencode: $($it.Id)" }
