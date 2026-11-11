@@ -84,6 +84,22 @@ class TransferTests(unittest.TestCase):
         events = [s['events'][0]['id'] for s in sessions.values()]
         self.assertEqual(2, len(set(events)))
 
+    def test_dev_profile_is_a_separate_claude_destination(self):
+        self.request['claude_work_root'] = str(self.root / 'work')
+        self.request['claude_dev_root'] = str(self.root / 'dev')
+        self.append('claude', 'shared task')
+        personal = Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')
+        for name in ('work', 'dev'):
+            (self.root / name).mkdir()
+            (self.root / name / personal.name).write_bytes(personal.read_bytes())
+        result = self.transfer(['claude-dev:' + IDS['claude']], 'codex')
+        self.assertEqual('ready', result['status'])
+        self.assertIn('claude-dev:' + IDS['claude'], self.payload(result))
+        with sqlite3.connect(self.request['state_dir'] + '/sync.db') as db:
+            cached = [json.loads(row[0]) for row in db.execute('SELECT data FROM cache')]
+        keys = {s['key'] for s in cached if s['id'] == IDS['claude']}
+        self.assertEqual({'claude:', 'claude-work:', 'claude-dev:'}, {k.split(':')[0] + ':' for k in keys})
+
     def test_claude_receipts_and_resume_targets_stay_in_selected_profile(self):
         self.request['claude_work_root'] = str(self.root / 'work')
         self.append('codex', 'task')

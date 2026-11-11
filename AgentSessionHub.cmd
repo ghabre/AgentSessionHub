@@ -1,6 +1,6 @@
 @echo off
 rem Agent Session Hub: opens enabled session pickers as tabs in one Windows Terminal window.
-rem Set AGENT_HUB_TOOLS to a comma-separated list of codex,claude,claude-work,opencode (default: all three).
+rem Set AGENT_HUB_TOOLS to a comma-separated list of codex,claude,claude-work,claude-dev,opencode (default: codex,claude,opencode).
 set "terminal=wt.exe"
 where wt.exe >nul 2>&1
 if not errorlevel 1 goto launch
