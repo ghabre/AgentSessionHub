@@ -11,11 +11,16 @@ try { $available = @(Get-HubAvailableTools) } catch {
 $env:AGENT_HUB_AVAILABLE_TOOLS = $available -join ','
 $missing = @($requested | Where-Object { $_ -in @('codex', 'claude', 'opencode') -and $_ -notin $available })
 $showReminder = Show-HubMissingTools $missing
+$workAvailable = 'claude-work' -in $requested -and 'claude' -in $available -and (Test-HubClaudeWork)
 $tabs = @()
-foreach ($tool in @('codex', 'claude', 'opencode')) {
-    if ($tool -notin $requested -or $tool -notin $available) { continue }
+foreach ($tool in @('codex', 'claude', 'claude-work', 'opencode')) {
+    $cli = if ($tool -eq 'claude-work') { 'claude' } else { $tool }
+    if ($tool -notin $requested -or $cli -notin $available) { continue }
+    if ($tool -eq 'claude-work' -and -not $workAvailable) { continue }
     if ($tabs.Count) { $tabs += ';' }
-    $tabs += @('new-tab', '--title', $tool, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$tool.ps1"))
+    $tabs += @('new-tab', '--title', $tool, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$cli.ps1"))
+    # Terminal has no per-tab environment: carry the profile as a script argument.
+    if ($tool -eq 'claude-work') { $tabs += @('-Profile', 'work') }
 }
 if ($tabs.Count) { & $args[0] -w $env:AGENT_SESSION_HUB_WINDOW @tabs }
 if ($showReminder) {

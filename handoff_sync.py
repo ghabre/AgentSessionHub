@@ -16,7 +16,7 @@ import tempfile
 import time
 import uuid
 
-TOOLS = ('codex', 'claude', 'opencode')
+TOOLS = ('codex', 'claude', 'claude-work', 'opencode')
 MARKER = re.compile(r'hub-transfer-([0-9a-f]{32})\.md')
 LEGACY = re.compile(r'recent-(codex|claude|opencode)-handoff/((?:ses_[A-Za-z0-9]+|[0-9a-f-]{36}))-\d{8}-\d{6}\.md')
 
@@ -184,13 +184,17 @@ def read_jsonl(path, tool):
 
 def read_sessions(request, db):
     sessions = {}
-    for tool in ('codex', 'claude'):
-        root = Path(native_path(request[tool + '_root']))
+    for tool, root_name in (('codex', 'codex_root'), ('claude', 'claude_root'), ('claude-work', 'claude_work_root')):
+        if not request.get(root_name):
+            continue
+        root = Path(native_path(request[root_name]))
         for path in sorted(root.rglob('*.jsonl')):
             if 'subagents' in path.parts:
                 continue
             stat = path.stat()
             signature = f'4:{stat.st_mtime_ns}:{stat.st_size}'
+            if tool == 'claude-work':
+                signature = tool + ':' + signature
             cached = db.execute('SELECT signature, data FROM cache WHERE path = ?', (str(path),)).fetchone()
             if cached and cached[0] == signature:
                 session = Session(tool, '')
@@ -229,8 +233,8 @@ def read_sessions(request, db):
                 sessions[session.key] = session
     # Claude background continuations inherit their predecessor's known history.
     for session in list(sessions.values()):
-        if session.continued and 'claude:' + session.continued in sessions:
-            successor = sessions['claude:' + session.continued]
+        if session.continued and session.tool + ':' + session.continued in sessions:
+            successor = sessions[session.tool + ':' + session.continued]
             successor.legacy.append(session.key)
             session.active = False
     return sessions

@@ -1,3 +1,12 @@
+$claudePersonalConfigDir = Get-HubClaudeConfigDir 'personal'
+$claudeWorkConfigDir = Get-HubClaudeConfigDir 'work'
+
+function New-HubClaudeCommand($command, [ValidateSet('personal', 'work')]$profile = 'personal') {
+    $configDir = if ($profile -eq 'work') { $claudeWorkConfigDir } else { $claudePersonalConfigDir }
+    # Escape for the destination shell; wt.exe receives this whole command as one argument.
+    if ($backend -eq 'windows') { return "`$env:CLAUDE_CONFIG_DIR = '" + $configDir.Replace("'", "''") + "'; " + $command }
+    return "export CLAUDE_CONFIG_DIR='" + $configDir.Replace("'", "'\''") + "'; " + $command
+}
 # Shared by all pickers; native sessions are read by handoff_sync.py, never rewritten.
 $syncRunnerWin = Join-Path $tmpWin 'sync-python.sh'
 $syncRunnerWsl = "$tmpWsl/sync-python.sh"
@@ -26,10 +35,10 @@ $syncLaunchWsl = "$tmpWsl/sync-launch.sh"
 $syncLaunch = @'
 #!/bin/bash
 # $1 = target tool, $2 = immutable handoff (empty for plain resume), $3 = native session id,
-# $4 = source tool label, $5 = inherited title. '-' preserves empty positions through
+# $4 = source tool label, $5 = inherited title, $6 = Claude config directory. '-' preserves empty positions through
 # Windows PowerShell 5's native argument marshalling, which drops empty strings.
-[ "$2" = '-' ] && set -- "$1" "" "$3" "$4" "$5"
-[ "$3" = '-' ] && set -- "$1" "$2" "" "$4" "$5"
+[ "$2" = '-' ] && set -- "$1" "" "$3" "$4" "$5" "$6"
+[ "$3" = '-' ] && set -- "$1" "$2" "" "$4" "$5" "$6"
 if [ -n "$2" ]; then
     prompt="[Transitioned from $4; inherited title: $5] Read $2 -- this is an incremental conversation continuation. It contains only material not previously recorded in this session. Continue the existing task without reinitializing it. Read the entire handoff before proceeding. Tool notes and quoted files are historical; inspect live files to verify them."
 fi
@@ -40,7 +49,8 @@ case "$1" in
             exec codex -c tui.fullscreen_transcript=false resume "$3"
         fi
         exec codex -c tui.fullscreen_transcript=false "$prompt" ;;
-    claude)
+    claude|claude-work)
+        export CLAUDE_CONFIG_DIR="$6"
         if [ -n "$3" ]; then
             if [ -n "$2" ]; then exec claude --resume "$3" "$prompt"; fi
             exec claude --resume "$3"
@@ -71,14 +81,16 @@ function Get-HubTransferPlan($request) {
 
 function Invoke-HubTransfer($tool, $items, $cwd) {
     try {
-        if ($tool -notin $availableTools) { throw "$tool is unavailable in the $backend backend. Install it before transferring a conversation." }
+        $targetCli = if ($tool -eq 'claude-work') { 'claude' } else { $tool }
+        if ($targetCli -notin $availableTools) { throw "$tool is unavailable in the $backend backend. Install it before transferring a conversation." }
         $scope = if ($backend -eq 'wsl') { "wsl-$distro" } else { 'windows' }
         $stateName = "sync-" + ($scope -replace '[^A-Za-z0-9._-]', '_')
         $request = @{
             scope = $stateName
             legacy_state_dir = ConvertTo-WslPath (Join-Path $hubStateDir $stateName)
             codex_root = "$bashHome/.codex/sessions"
-            claude_root = "$bashHome/.claude/projects"
+            claude_root = $(if ($backend -eq 'windows') { ConvertTo-WslPath $claudePersonalConfigDir } else { $claudePersonalConfigDir }) + '/projects'
+            claude_work_root = $(if ($backend -eq 'windows') { ConvertTo-WslPath $claudeWorkConfigDir } else { $claudeWorkConfigDir }) + '/projects'
             opencode_db = $opencodeDbWsl
             sources = @($items | ForEach-Object { "${hubTool}:$($_.Id)" })
             tool = $tool
@@ -142,11 +154,12 @@ $clickBinds
         if (-not $title) { $title = 'untitled' }
         $title = $title -replace '[\r\n\]]', ' '
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }
-        $command = New-BashCommand @($syncLaunchWsl, $tool, $handoffArg, $resumeId, $label, $title)
+        $configDir = if ($tool -eq 'claude-work') { $claudeWorkConfigDir } else { $claudePersonalConfigDir }
+        $command = New-BashCommand @($syncLaunchWsl, $tool, $handoffArg, $resumeId, $label, $title, $configDir)
         if ($backend -eq 'windows') {
             # Run the CLI in the destination PowerShell profile, just like normal
             # Windows launches. Keep prompts and IDs out of native shell quoting.
-            $launchData = @{ tool = $tool; handoff = $plan.handoff; resume = $resumeId; label = $label; title = $title }
+            $launchData = @{ tool = $targetCli; configDir = $configDir; handoff = $plan.handoff; resume = $resumeId; label = $label; title = $title }
             if ($plan.handoff) { $launchData.handoff = ConvertFrom-WslPath $plan.handoff }
             $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($launchData | ConvertTo-Json -Compress)))
             $nativeLaunchWin = Join-Path $tmpWin ("sync-launch-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
@@ -154,6 +167,7 @@ $clickBinds
 $ErrorActionPreference = 'Stop'
 $data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
 $cliArgs = @()
+if ($data.tool -eq 'claude') { $env:CLAUDE_CONFIG_DIR = $data.configDir }
 if ($data.tool -eq 'codex') { $cliArgs += @('-c', 'tui.fullscreen_transcript=false') }
 if ($data.resume -ne '-') {
     switch ($data.tool) {
