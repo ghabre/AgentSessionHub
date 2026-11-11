@@ -63,6 +63,20 @@ function Get-HubClaudeConfigDir([ValidateSet('personal', 'work')]$profile = 'per
     return "$profileHome/" + $(if ($profile -eq 'work') { '.claude-work' } else { '.claude' })
 }
 
+# Both Claude profiles run the same CLI, so label and color their tabs. Claude Code may
+# replace the tab title with its own, but Windows Terminal keeps the tab color.
+function Get-HubTabLabel($tool) {
+    switch ($tool) { 'claude' { 'claude personal' } 'claude-work' { 'claude work' } default { $tool } }
+}
+
+function Get-HubTabColorArgs($tool) {
+    $color = switch ($tool) {
+        'claude' { if ($env:CLAUDE_TAB_COLOR) { $env:CLAUDE_TAB_COLOR } else { '#D97757' } }
+        'claude-work' { if ($env:CLAUDE_WORK_TAB_COLOR) { $env:CLAUDE_WORK_TAB_COLOR } else { '#2F81F7' } }
+    }
+    if ($color) { @('--tabColor', $color) } else { @() }
+}
+
 function Test-HubClaudeWork {
     $configDir = Get-HubClaudeConfigDir 'work'
     if ($env:AGENT_HUB_BACKEND -eq 'windows' -or $backend -eq 'windows') { return Test-Path -LiteralPath $configDir -PathType Container }

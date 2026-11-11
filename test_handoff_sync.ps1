@@ -132,7 +132,7 @@ try {
     $requested = @('claude', 'claude-work')
     $showReminder = $false
     & $hubBuilder 'Record-HubTabs'
-    Assert-True ('claude-work' -in $script:tabArgs -and '-Profile' -in $script:tabArgs -and 'work' -in $script:tabArgs) 'Hub omitted the work tab or profile argument.'
+    Assert-True ('claude work' -in $script:tabArgs -and '--tabColor' -in $script:tabArgs -and '-Profile' -in $script:tabArgs -and 'work' -in $script:tabArgs) 'Hub omitted the work tab or profile argument.'
     Assert-True (@($script:tabArgs | Where-Object { $_ -eq (Join-Path $PSScriptRoot 'recent-claude.ps1') }).Count -eq 2) 'Hub did not reuse the Claude picker.'
     $env:CLAUDE_WORK_CONFIG_DIR = Join-Path $root 'missing-work'
     & $hubBuilder 'Record-HubTabs'

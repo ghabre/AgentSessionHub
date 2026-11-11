@@ -187,7 +187,7 @@ if ($data.handoff) {
             $command = "& '" + $nativeLaunchWin.Replace("'", "''") + "'"
         }
         Write-Host $(if ($plan.handoff) { "Continuing with $($plan.count) new messages/tool notes." } else { 'Already synchronized; resuming without adding a prompt.' })
-        Open-WtTab "${tool}: $title" $cwd $command
+        Open-WtTab "$(Get-HubTabLabel $tool): $title" $cwd $command $tool
     } catch {
         Write-Host "Conversation transfer stopped: $($_.Exception.Message)" -ForegroundColor Red
         Start-Sleep -Milliseconds 1800

@@ -18,7 +18,7 @@ foreach ($tool in @('codex', 'claude', 'claude-work', 'opencode')) {
     if ($tool -notin $requested -or $cli -notin $available) { continue }
     if ($tool -eq 'claude-work' -and -not $workAvailable) { continue }
     if ($tabs.Count) { $tabs += ';' }
-    $tabs += @('new-tab', '--title', $tool, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$cli.ps1"))
+    $tabs += @('new-tab', '--title', (Get-HubTabLabel $tool)) + @(Get-HubTabColorArgs $tool) + @('powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$cli.ps1"))
     # Terminal has no per-tab environment: carry the profile as a script argument.
     if ($tool -eq 'claude-work') { $tabs += @('-Profile', 'work') }
 }

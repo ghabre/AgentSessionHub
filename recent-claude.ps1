@@ -53,6 +53,8 @@
 
 # -Profile work uses CLAUDE_WORK_CONFIG_DIR (default ~/.claude-work) and its own
 # backups\claude-work directory, overridable with CLAUDE_WORK_BACKUP_DIR.
+# Tabs are labelled "claude personal"/"claude work" and colored per profile; override the
+# colors with CLAUDE_TAB_COLOR / CLAUDE_WORK_TAB_COLOR (#RRGGBB).
 param([ValidateSet('personal', 'work')][string]$Profile = 'personal')
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -196,12 +198,14 @@ $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW }
 
 # wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
-function Open-WtTab($title, $cwd, $command) {
+# $tool, when given, adds that tool's tab color (see Get-HubTabColorArgs).
+function Open-WtTab($title, $cwd, $command, $tool) {
+    $colorArgs = @(Get-HubTabColorArgs $tool)
     if ($backend -eq 'wsl') {
-        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') `
+        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs `
             wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
     } else {
-        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') -d ($cwd -replace ';', '\;') `
+        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs -d ($cwd -replace ';', '\;') `
             $tabShell -NoLogo -Command ($command -replace ';', '\;')
     }
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
@@ -712,9 +716,10 @@ After every completed repository change, automatically create a local Git commit
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
-    $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
+    $tabTool = if ($tool -eq 'claude') { $profileTool } else { $tool }
+    $title = "$(Get-HubTabLabel $tabTool): $name"
     $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $Profile } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
-    Open-WtTab $title $path $command
+    Open-WtTab $title $path $command $tabTool
 }
 
 # Read a transcript as an ordered list of chat messages: @{ Role='User'|'Claude'; Body=... }.
@@ -860,7 +865,7 @@ function Copy-SessionToOtherProfile($item) {
     # File.Copy refuses overwrite, including a destination created after the check.
     [IO.File]::Copy($source, $destination, $false)
     $targetTool = if ($otherProfile -eq 'work') { 'claude-work' } else { 'claude' }
-    Open-WtTab "${targetTool}: $($item.Title)" $item.Cwd (New-HubClaudeCommand "claude --resume $($item.Id)" $otherProfile)
+    Open-WtTab "$(Get-HubTabLabel $targetTool): $($item.Title)" $item.Cwd (New-HubClaudeCommand "claude --resume $($item.Id)" $otherProfile) $targetTool
 }
 
 function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
@@ -1219,7 +1224,7 @@ while ($true) {
         }
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
         if ($tool -ne 'claude')   { Invoke-Handoff $tool $it.Id $it.Cwd $it.Tr $it.Title; continue }
-        $tabTitle = if ($it.Title) { "${profileTool}: $($it.Title)" } else { "${profileTool}: $($it.Id)" }
-        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $Profile)
+        $tabTitle = "$(Get-HubTabLabel $profileTool): $(if ($it.Title) { $it.Title } else { $it.Id })"
+        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $Profile) $profileTool
     }
 }

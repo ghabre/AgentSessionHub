@@ -193,12 +193,14 @@ $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW }
 
 # wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
-function Open-WtTab($title, $cwd, $command) {
+# $tool, when given, adds that tool's tab color (see Get-HubTabColorArgs).
+function Open-WtTab($title, $cwd, $command, $tool) {
+    $colorArgs = @(Get-HubTabColorArgs $tool)
     if ($backend -eq 'wsl') {
-        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') `
+        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs `
             wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
     } else {
-        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') -d ($cwd -replace ';', '\;') `
+        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs -d ($cwd -replace ';', '\;') `
             $tabShell -NoLogo -Command ($command -replace ';', '\;')
     }
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
@@ -831,9 +833,9 @@ After every completed repository change, automatically create a local Git commit
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
-    $title = if ($tool -eq 'codex') { $name } else { "${tool}: $name" }
+    $title = if ($tool -eq 'codex') { $name } else { "$(Get-HubTabLabel $tool): $name" }
     $command = if ($tool -in @('claude', 'claude-work')) { New-HubClaudeCommand 'claude' $(if ($tool -eq 'claude-work') { 'work' } else { 'personal' }) } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
-    Open-WtTab $title $path $command
+    Open-WtTab $title $path $command $tool
 }
 
 # Text of a transcript record, whatever content shape Codex used: a plain string, or a
