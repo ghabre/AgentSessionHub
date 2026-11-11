@@ -285,7 +285,9 @@ $clickBinds = (@"
 $expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-a', 'alt-f', 'alt-h', 'alt-s') -join ','
 # Rewritten before every pick so the prompt and header name the active account.
 function Write-FzfScript {
-    $label = (Get-HubClaudeProfiles)[$script:account].Label
+    $profile = (Get-HubClaudeProfiles)[$script:account]
+    $label = $profile.Label
+    $color = (Get-HubTabColorArgs $profile.Tool)[1]   # the account's tab color, so a switch is visible
     $others = $claudeAccounts.Count -gt 1
     $headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($others) { "alt-a: account ($label)" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
     $fzfSh = @"
@@ -296,7 +298,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --multi \
     --expect=$expectKeys \
 $clickBinds
-    --prompt='claude [$label] sessions> ' --reverse \
+    --prompt='claude [$label] sessions> ' --color='prompt:$color' --reverse \
     --header='$headerActions' \
     > "`$2"
 "@ -replace "`r`n","`n"
