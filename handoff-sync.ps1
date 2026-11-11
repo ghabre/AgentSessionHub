@@ -35,13 +35,13 @@ exit 127
 $syncEngineWsl = ConvertTo-WslPath (Join-Path $PSScriptRoot 'handoff_sync.py')
 
 # fzf options for a session picker: a preview pane with the highlighted session's last turns
-# (column 2 is its id), hidden or shown with alt-p. $root is the tool's store, as in the
+# (column 2 is its id). It starts hidden so the key header keeps the full width; alt-p toggles it. $root is the tool's store, as in the
 # transfer request. Apostrophes in paths are escaped for the single-quoted fzf command.
 function Get-HubPreviewOptions($root) {
     $runner, $engine, $store = @($syncRunnerWsl, $syncEngineWsl, $root) | ForEach-Object { $_.Replace("'", "'\''") }
     @"
     --preview 'bash "$runner" "$engine" preview $hubTool "$store" {2}' \
-    --preview-window 'right,45%,wrap,follow' --bind 'alt-p:toggle-preview' \
+    --preview-window 'right,45%,wrap,follow,hidden' --bind 'alt-p:toggle-preview' \
 "@ -replace "`r`n", "`n"
 }
 $syncLaunchWin = Join-Path $tmpWin 'sync-launch.sh'
