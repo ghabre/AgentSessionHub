@@ -38,14 +38,16 @@ function Show-HubMissingTools([string[]]$tools) {
     return $shown
 }
 
-# One row per Claude login, in display order. personal is the stock ~/.claude; every other
-# profile reads CLAUDE_<NAME>_CONFIG_DIR (default ~/.claude-<name>) and only appears when
-# listed in AGENT_HUB_TOOLS and that directory exists. Key is the hotkey that targets it.
+# One row per Claude login (account), in Alt-A cycle order. personal is the stock login
+# (~/.claude plus ~/.claude.json) and owns the one shared session history. Every other
+# account keeps only its login in CLAUDE_<NAME>_CONFIG_DIR (default ~/.claude-<name>) and
+# links everything else to ~/.claude (link-claude-accounts.sh), so any account can resume
+# any session. An account is offered once its folder exists. Tool is only a tab identity.
 function Get-HubClaudeProfiles {
     [ordered]@{
-        personal = [pscustomobject]@{ Name = 'personal'; Tool = 'claude';      Label = 'CP'; Key = 'alt-c'; Color = '#D97757' }
-        work     = [pscustomobject]@{ Name = 'work';     Tool = 'claude-work'; Label = 'CW'; Key = 'alt-w'; Color = '#2F81F7' }
-        dev      = [pscustomobject]@{ Name = 'dev';      Tool = 'claude-dev';  Label = 'CD'; Key = 'alt-d'; Color = '#3FB950' }
+        personal = [pscustomobject]@{ Name = 'personal'; Tool = 'claude';      Label = 'CP'; Color = '#D97757' }
+        work     = [pscustomobject]@{ Name = 'work';     Tool = 'claude-work'; Label = 'CW'; Color = '#2F81F7' }
+        dev      = [pscustomobject]@{ Name = 'dev';      Tool = 'claude-dev';  Label = 'CD'; Color = '#3FB950' }
     }
 }
 
@@ -96,7 +98,7 @@ function Get-HubClaudeConfigDir([ValidateSet('personal', 'work', 'dev')]$profile
     return "$profileHome/$dirName"
 }
 
-# Both Claude profiles run the same CLI, so label (CP/CW/CD) and color their tabs. Claude
+# Every Claude account runs the same CLI, so label (CP/CW/CD) and color their tabs. Claude
 # Code may replace the tab title with its own, but Windows Terminal keeps the tab color.
 function Get-HubTabLabel($tool) {
     $profile = Get-HubClaudeProfileOfTool $tool
@@ -123,8 +125,25 @@ function Test-HubClaudeProfile($profile) {
     return $LASTEXITCODE -eq 0
 }
 
-# Profiles a picker can hand off to: requested in AGENT_HUB_TOOLS, CLI installed, dir present.
-function Get-HubClaudeTargets([string[]]$requested, [string[]]$available) {
-    if ('claude' -notin $available) { return @() }
-    @((Get-HubClaudeProfiles).Values | Where-Object { $_.Tool -in $requested -and (Test-HubClaudeProfile $_.Name) })
+function Get-HubClaudeAccounts {
+    @((Get-HubClaudeProfiles).Values | Where-Object { Test-HubClaudeProfile $_.Name })
+}
+
+# The active account is shared by every picker: Alt-A in the Claude picker sets it, and
+# every Claude launch or handoff uses it. A missing or vanished account falls back to personal.
+function Get-HubClaudeAccountFile { Join-Path (Join-Path $env:LOCALAPPDATA 'AgentSessionHub') 'claude-account.txt' }
+
+# $known (account names) skips re-probing account folders when the caller has the list.
+function Get-HubClaudeActiveAccount([string[]]$known) {
+    $file = Get-HubClaudeAccountFile
+    $name = if (Test-Path -LiteralPath $file) { "$(Get-Content -LiteralPath $file -Raw)".Trim() }
+    if (-not $name -or -not (Get-HubClaudeProfiles).Contains($name)) { return 'personal' }
+    $exists = if ($PSBoundParameters.ContainsKey('known')) { $name -in $known } else { Test-HubClaudeProfile $name }
+    if ($exists) { $name } else { 'personal' }
+}
+
+function Set-HubClaudeActiveAccount($name) {
+    $file = Get-HubClaudeAccountFile
+    [void][IO.Directory]::CreateDirectory((Split-Path $file))
+    [IO.File]::WriteAllText($file, $name)
 }
