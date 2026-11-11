@@ -1,8 +1,14 @@
 $claudeConfigDirs = @{}
 foreach ($claudeProfile in (Get-HubClaudeProfiles).Keys) { $claudeConfigDirs[$claudeProfile] = Get-HubClaudeConfigDir $claudeProfile }
 
-function New-HubClaudeCommand($command, [ValidateSet('personal', 'work', 'dev')]$profile = 'personal') {
-    $configDir = $claudeConfigDirs[$profile]
+# Personal must run with CLAUDE_CONFIG_DIR unset: its account file is ~/.claude.json, which
+# Claude Code only reads when the variable is absent (a set value moves it into the dir).
+function New-HubClaudeCommand($command, [ValidateSet('personal', 'work', 'dev')]$account = 'personal') {
+    if ($account -eq 'personal') {
+        if ($backend -eq 'windows') { return "Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue; " + $command }
+        return "unset CLAUDE_CONFIG_DIR; " + $command
+    }
+    $configDir = $claudeConfigDirs[$account]
     # Escape for the destination shell; wt.exe receives this whole command as one argument.
     if ($backend -eq 'windows') { return "`$env:CLAUDE_CONFIG_DIR = '" + $configDir.Replace("'", "''") + "'; " + $command }
     return "export CLAUDE_CONFIG_DIR='" + $configDir.Replace("'", "'\''") + "'; " + $command
@@ -35,7 +41,8 @@ $syncLaunchWsl = "$tmpWsl/sync-launch.sh"
 $syncLaunch = @'
 #!/bin/bash
 # $1 = target tool, $2 = immutable handoff (empty for plain resume), $3 = native session id,
-# $4 = source tool label, $5 = inherited title, $6 = Claude config directory. '-' preserves empty positions through
+# $4 = source tool label, $5 = inherited title, $6 = Claude config directory ('-' = personal,
+# run with it unset). '-' preserves empty positions through
 # Windows PowerShell 5's native argument marshalling, which drops empty strings.
 [ "$2" = '-' ] && set -- "$1" "" "$3" "$4" "$5" "$6"
 [ "$3" = '-' ] && set -- "$1" "$2" "" "$4" "$5" "$6"
@@ -49,8 +56,8 @@ case "$1" in
             exec codex -c tui.fullscreen_transcript=false resume "$3"
         fi
         exec codex -c tui.fullscreen_transcript=false "$prompt" ;;
-    claude|claude-*)
-        export CLAUDE_CONFIG_DIR="$6"
+    claude)
+        if [ "$6" = '-' ] || [ -z "$6" ]; then unset CLAUDE_CONFIG_DIR; else export CLAUDE_CONFIG_DIR="$6"; fi
         if [ -n "$3" ]; then
             if [ -n "$2" ]; then exec claude --resume "$3" "$prompt"; fi
             exec claude --resume "$3"
@@ -81,7 +88,7 @@ function Get-HubTransferPlan($request) {
 
 function Invoke-HubTransfer($tool, $items, $cwd) {
     try {
-        $targetCli = if (Get-HubClaudeProfileOfTool $tool) { 'claude' } else { $tool }
+        $targetCli = $tool
         if ($targetCli -notin $availableTools) { throw "$tool is unavailable in the $backend backend. Install it before transferring a conversation." }
         $scope = if ($backend -eq 'wsl') { "wsl-$distro" } else { 'windows' }
         $stateName = "sync-" + ($scope -replace '[^A-Za-z0-9._-]', '_')
@@ -94,11 +101,8 @@ function Invoke-HubTransfer($tool, $items, $cwd) {
             tool = $tool
             preview = $true
         }
-        # claude_root, claude_work_root, claude_dev_root: one transcript root per profile.
-        foreach ($claudeProfile in (Get-HubClaudeProfiles).Values) {
-            $dir = $claudeConfigDirs[$claudeProfile.Name]
-            $request[$claudeProfile.Tool.Replace('-', '_') + '_root'] = $(if ($backend -eq 'windows') { ConvertTo-WslPath $dir } else { $dir }) + '/projects'
-        }
+        # Every account links its projects/ to ~/.claude, so one root covers them all.
+        $request.claude_root = $(if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDirs.personal } else { $claudeConfigDirs.personal }) + '/projects'
         Write-Host 'Checking conversation synchronization...'
         $plan = Get-HubTransferPlan $request
         if ($plan.status -eq 'choose') {
@@ -157,14 +161,15 @@ $clickBinds
         if (-not $title) { $title = 'untitled' }
         $title = $title -replace '[\r\n\]]', ' '
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }
-        # Non-Claude targets ignore it; the launcher still takes a positional value.
-        $targetProfile = Get-HubClaudeProfileOfTool $tool
-        $configDir = $claudeConfigDirs[$(if ($targetProfile) { $targetProfile } else { 'personal' })]
+        # Claude opens in the active account; non-Claude targets ignore the config value.
+        $account = if ($tool -eq 'claude') { Get-HubClaudeActiveAccount } else { 'personal' }
+        $configDir = if ($account -eq 'personal') { '-' } else { $claudeConfigDirs[$account] }
+        $tabTool = if ($tool -eq 'claude') { (Get-HubClaudeProfiles)[$account].Tool } else { $tool }
         $command = New-BashCommand @($syncLaunchWsl, $tool, $handoffArg, $resumeId, $label, $title, $configDir)
         if ($backend -eq 'windows') {
             # Run the CLI in the destination PowerShell profile, just like normal
             # Windows launches. Keep prompts and IDs out of native shell quoting.
-            $launchData = @{ tool = $targetCli; configDir = $configDir; handoff = $plan.handoff; resume = $resumeId; label = $label; title = $title }
+            $launchData = @{ tool = $targetCli; configDir = $(if ($configDir -ne '-') { $configDir });  handoff = $plan.handoff; resume = $resumeId; label = $label; title = $title }
             if ($plan.handoff) { $launchData.handoff = ConvertFrom-WslPath $plan.handoff }
             $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($launchData | ConvertTo-Json -Compress)))
             $nativeLaunchWin = Join-Path $tmpWin ("sync-launch-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
@@ -172,7 +177,9 @@ $clickBinds
 $ErrorActionPreference = 'Stop'
 $data = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
 $cliArgs = @()
-if ($data.tool -eq 'claude') { $env:CLAUDE_CONFIG_DIR = $data.configDir }
+if ($data.tool -eq 'claude') {
+    if ($data.configDir) { $env:CLAUDE_CONFIG_DIR = $data.configDir } else { Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue }
+}
 if ($data.tool -eq 'codex') { $cliArgs += @('-c', 'tui.fullscreen_transcript=false') }
 if ($data.resume -ne '-') {
     switch ($data.tool) {
@@ -192,7 +199,7 @@ if ($data.handoff) {
             $command = "& '" + $nativeLaunchWin.Replace("'", "''") + "'"
         }
         Write-Host $(if ($plan.handoff) { "Continuing with $($plan.count) new messages/tool notes." } else { 'Already synchronized; resuming without adding a prompt.' })
-        Open-WtTab "$(Get-HubTabLabel $tool): $title" $cwd $command $tool
+        Open-WtTab "$(Get-HubTabLabel $tabTool): $title" $cwd $command $tabTool
     } catch {
         Write-Host "Conversation transfer stopped: $($_.Exception.Message)" -ForegroundColor Red
         Start-Sleep -Milliseconds 1800

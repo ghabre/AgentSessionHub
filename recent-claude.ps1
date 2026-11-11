@@ -51,16 +51,17 @@
 # Usage: run under Windows PowerShell, e.g. a shortcut with target:
 #   powershell.exe -NoExit -ExecutionPolicy Bypass -File "C:\path\to\recent-claude.ps1"
 
-# -Profile work|dev uses CLAUDE_WORK_CONFIG_DIR / CLAUDE_DEV_CONFIG_DIR (default
-# ~/.claude-work, ~/.claude-dev) and its own backups\claude-work|claude-dev directory,
-# overridable with CLAUDE_WORK_BACKUP_DIR / CLAUDE_DEV_BACKUP_DIR. Profiles are defined in
-# Get-HubClaudeProfiles (hub-tools.ps1). Tabs are labelled CP/CW/CD and colored per
-# profile; override with CLAUDE_TAB_COLOR / CLAUDE_WORK_TAB_COLOR / CLAUDE_DEV_TAB_COLOR.
-param([ValidateSet('personal', 'work', 'dev')][string]$Profile = 'personal')
+# Claude accounts: one session history (~/.claude), several logins. Alt-A cycles the active
+# account (personal CP, work CW, dev CD -- see Get-HubClaudeProfiles in hub-tools.ps1), and
+# every launch, resume and handoff opens in it. work/dev keep only their login in
+# CLAUDE_WORK_CONFIG_DIR / CLAUDE_DEV_CONFIG_DIR (default ~/.claude-work, ~/.claude-dev);
+# link-claude-accounts.sh links the rest of each to ~/.claude at startup. Tabs are labelled
+# CP/CW/CD and colored per account; override with CLAUDE_TAB_COLOR / CLAUDE_WORK_TAB_COLOR /
+# CLAUDE_DEV_TAB_COLOR.
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
-$script:recentScriptArgs = @('-Profile', $Profile) + @($args)
+$script:recentScriptArgs = @($args)
 
 # File.ReadLines refuses files another process holds open for writing, which native agents
 # do with their live transcripts. Stream lines with read/write sharing instead.
@@ -180,16 +181,14 @@ function New-BashCommand([string[]]$arguments) {
 function Invoke-Git {
     if ($backend -eq 'wsl') { wsl.exe -d $distro -- git @args } else { git @args }
 }
-$claudeConfigDir = Get-HubClaudeConfigDir $Profile
+# The shared history lives in personal's ~/.claude; accounts only change the login.
+$claudeConfigDir = Get-HubClaudeConfigDir 'personal'
 $claude = if ($backend -eq 'wsl') { ConvertFrom-WslPath $claudeConfigDir } else { $claudeConfigDir }
 $claudeConfigDirBash = if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDir } else { $claudeConfigDir }
-$profileTool = (Get-HubClaudeProfiles)[$Profile].Tool
-# Every other existing profile is a copy target, keyed by the destination's hotkey.
-$copyTargets = @((Get-HubClaudeProfiles).Values | Where-Object { $_.Name -ne $Profile -and (Test-HubClaudeProfile $_.Name) })
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
 $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
-$hiddenSessionsFile = Join-Path $hubStateDir "hidden-$profileTool-session-ids.txt"
+$hiddenSessionsFile = Join-Path $hubStateDir 'hidden-claude-session-ids.txt'
 
 # Locate wt.exe (may not be on PATH depending on launch context)
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
@@ -211,7 +210,7 @@ function Open-WtTab($title, $cwd, $command, $tool) {
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
 }
 
-$hubTool = $profileTool
+$hubTool = 'claude'
 . (Join-Path $PSScriptRoot 'handoff-sync.ps1')
 
 # Use the LINUX fzf inside WSL, not fzf.exe: the Windows build mis-parses Windows
@@ -283,9 +282,13 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), @($copyTargets | ForEach-Object { $_.Key }), 'alt-f', 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), @($copyTargets | ForEach-Object { "$($_.Key): copy to $($_.Label)" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
-$fzfSh = @"
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-a', 'alt-f', 'alt-h', 'alt-s') -join ','
+# Rewritten before every pick so the prompt and header name the active account.
+function Write-FzfScript {
+    $label = (Get-HubClaudeProfiles)[$script:account].Label
+    $others = $claudeAccounts.Count -gt 1
+    $headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($others) { "alt-a: account ($label)" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+    $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
 tr -d '\r' < "`$1" | "$fzfPath" \
@@ -293,11 +296,12 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --multi \
     --expect=$expectKeys \
 $clickBinds
-    --prompt='$(Get-HubTabLabel $profileTool) sessions> ' --reverse \
+    --prompt='claude [$label] sessions> ' --reverse \
     --header='$headerActions' \
     > "`$2"
 "@ -replace "`r`n","`n"
-[System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
+    [System.IO.File]::WriteAllText($fzfShWin, $fzfSh)
+}
 
 $showSh = @"
 #!/bin/bash
@@ -305,7 +309,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
 $clickBinds
-    --prompt='hidden $(Get-HubTabLabel $profileTool) sessions> ' --reverse \
+    --prompt='hidden claude sessions> ' --reverse \
     --header='enter: show | tab: mark multiple | esc: cancel' \
     > "`$2"
 "@ -replace "`r`n","`n"
@@ -372,8 +376,7 @@ $clickBinds
 # survive `wsl --unregister`, a VHD corruption, or a distro rebuild. ~1.7s and ~26MB per
 # snapshot at 100MB of transcripts, so it runs inline at startup rather than in the
 # background. Override the location with $env:CLAUDE_BACKUP_DIR.
-$backupOverride = Get-HubClaudeProfileEnv $Profile 'BACKUP_DIR'
-$backupDir = if ($backupOverride) { $backupOverride } else { Join-Path $PSScriptRoot "backups\$profileTool" }
+$backupDir    = if ($env:CLAUDE_BACKUP_DIR) { $env:CLAUDE_BACKUP_DIR } else { Join-Path $PSScriptRoot 'backups\claude' }
 $backupDirWsl = ConvertTo-WslPath $backupDir
 $backupEvery  = 24   # hours between snapshots
 $backupKeep   = 10   # snapshots retained; older ones are pruned
@@ -420,6 +423,26 @@ ls -1 "`$dir"/claude-history-*.tar.gz 2>/dev/null | sort | head -n -$backupKeep 
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($backupShWin, $backupSh)
 
+# Point every other existing account at the shared history (link-claude-accounts.sh does
+# the work and never deletes). Runs at each launch/Esc reload, so it also repairs a link
+# that Claude Code replaced with a real file, and finishes an account once its sessions end.
+function Invoke-AccountLinks {
+    $accounts = @(Get-HubClaudeAccounts | Where-Object { $_.Name -ne 'personal' })
+    if (-not $accounts) { return }
+    $dirs = @($accounts | ForEach-Object {
+        $dir = Get-HubClaudeConfigDir $_.Name
+        if ($backend -eq 'windows') { ConvertTo-WslPath $dir } else { $dir }
+    })
+    foreach ($line in @(Invoke-Bash (ConvertTo-WslPath (Join-Path $PSScriptRoot 'link-claude-accounts.sh')) $claudeConfigDirBash @dirs)) {
+        $kind, $path = "$line" -split ':', 2
+        switch ($kind) {
+            'SET_ASIDE'   { Write-Host "Kept aside (now shared from ~/.claude): $path" -ForegroundColor Yellow }
+            'LIVE'        { Write-Host "Not linked yet, it has running Claude sessions: $path -- close them, then press Esc." -ForegroundColor Yellow }
+            'LINK_FAILED' { Write-Host "Could not link $path$(if ($backend -eq 'windows') { ' -- enable Windows Developer Mode for symlinks' })" -ForegroundColor Red }
+        }
+    }
+}
+
 # Runs once per launch; backup.sh itself decides whether one is actually due.
 function Invoke-Backup {
     Write-Host "Checking transcript backup..." -NoNewline
@@ -457,7 +480,7 @@ $relocatedPattern = '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"'
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP "recent-$profileTool-cache-v7.json"
+$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v7.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -716,9 +739,9 @@ After every completed repository change, automatically create a local Git commit
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
-    $tabTool = if ($tool -eq 'claude') { $profileTool } else { $tool }
+    $tabTool = if ($tool -eq 'claude') { (Get-HubClaudeProfiles)[$script:account].Tool } else { $tool }
     $title = "$(Get-HubTabLabel $tabTool): $name"
-    $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $Profile } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
+    $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $script:account } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
     Open-WtTab $title $path $command $tabTool
 }
 
@@ -848,25 +871,6 @@ function ConvertTo-ChatMarkdown($msgs) {
     return ($out.ToArray() -join "`n")
 }
 
-
-function Copy-SessionToOtherProfile($item, $targetProfile) {
-    $targetConfig = Get-HubClaudeConfigDir $targetProfile
-    $targetRoot = if ($backend -eq 'wsl') { ConvertFrom-WslPath $targetConfig } else { $targetConfig }
-    if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Claude $targetProfile config directory does not exist: $targetRoot" }
-    $sourceRoot = [IO.Path]::GetFullPath($projects).TrimEnd('\') + '\'
-    $source = [IO.Path]::GetFullPath($item.Tr)
-    if (-not $source.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Transcript is outside this profile projects directory.' }
-    $destination = Join-Path (Join-Path $targetRoot 'projects') $source.Substring($sourceRoot.Length)
-    if (Test-Path -LiteralPath $destination) {
-        Write-Host "Skipping existing destination transcript: $destination"
-        return
-    }
-    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
-    # File.Copy refuses overwrite, including a destination created after the check.
-    [IO.File]::Copy($source, $destination, $false)
-    $targetTool = (Get-HubClaudeProfiles)[$targetProfile].Tool
-    Open-WtTab "$(Get-HubTabLabel $targetTool): $($item.Title)" $item.Cwd (New-HubClaudeCommand "claude --resume $($item.Id)" $targetProfile) $targetTool
-}
 
 function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
     Invoke-HubTransfer $tool @([pscustomobject]@{ Id = $id; Title = $title; Cwd = $cwd }) $cwd
@@ -1116,7 +1120,6 @@ function Select-CombinedCwd($items) {
 
 # Reuse the shared transfer planner for combined sessions.
 function Invoke-CombineSession($items, $tool) {
-    if ($tool -eq 'claude') { $tool = $profileTool }
     Invoke-HubTransfer $tool $items $items[0].Cwd
 }
 
@@ -1153,11 +1156,16 @@ function Invoke-CombineCopy($items) {
 # -----------------------------------------------------------------------------------
 
 Invoke-Backup   # no-op unless the newest snapshot is older than $backupEvery hours
+Invoke-AccountLinks
+$claudeAccounts = @(Get-HubClaudeAccounts | ForEach-Object { $_.Name })
 
 $sessions = Update-List
 if (-not $sessions) { Write-Host "No past sessions found under $projects -- use the top row to start a new one." }
 
 while ($true) {
+    # Another picker window may have switched accounts; always launch in the saved one.
+    $script:account = Get-HubClaudeActiveAccount $claudeAccounts
+    Write-FzfScript
     # fzf (Linux, via WSL): list in via file, pick out via file, console untouched so
     # keyboard/mouse/resize all reach fzf. Wheel scrolls, a second click on the
     # highlighted row (or Enter) opens.
@@ -1171,6 +1179,12 @@ while ($true) {
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
     $key    = if ($out.Count) { $out[0].Trim() } else { '' }
     $picked = @($out | Select-Object -Skip 1 | Where-Object { $_ })
+    if ($key -eq 'alt-a') {   # next existing account; history and open tabs are unaffected
+        $claudeAccounts = @(Get-HubClaudeAccounts | ForEach-Object { $_.Name })   # pick up a new folder
+        $next = $claudeAccounts[([array]::IndexOf($claudeAccounts, $script:account) + 1) % $claudeAccounts.Count]
+        Set-HubClaudeActiveAccount $next
+        continue
+    }
     if ($key -eq 'alt-s') {
         Show-HiddenSessions
         $sessions = Update-List
@@ -1207,11 +1221,6 @@ while ($true) {
         $item
     })
     $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
-    $copyTarget = $copyTargets | Where-Object { $_.Key -eq $key } | Select-Object -First 1
-    if ($copyTarget) {
-        foreach ($item in $realItems) { Copy-SessionToOtherProfile $item $copyTarget.Name }
-        continue
-    }
     if ($realItems.Count -ge 2) {
         if ($key -eq 'alt-f') { Invoke-CombineCopy $realItems }
         else                  { Invoke-CombineSession $realItems $tool }
@@ -1225,7 +1234,8 @@ while ($true) {
         }
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $tool; continue }   # top row: start fresh
         if ($tool -ne 'claude')   { Invoke-Handoff $tool $it.Id $it.Cwd $it.Tr $it.Title; continue }
-        $tabTitle = "$(Get-HubTabLabel $profileTool): $(if ($it.Title) { $it.Title } else { $it.Id })"
-        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $Profile) $profileTool
+        $accountTool = (Get-HubClaudeProfiles)[$script:account].Tool
+        $tabTitle = "$(Get-HubTabLabel $accountTool): $(if ($it.Title) { $it.Title } else { $it.Id })"
+        Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $script:account) $accountTool
     }
 }

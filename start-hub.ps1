@@ -11,17 +11,12 @@ try { $available = @(Get-HubAvailableTools) } catch {
 $env:AGENT_HUB_AVAILABLE_TOOLS = $available -join ','
 $missing = @($requested | Where-Object { $_ -in @('codex', 'claude', 'opencode') -and $_ -notin $available })
 $showReminder = Show-HubMissingTools $missing
-$claudeTools = @(Get-HubClaudeTargets $requested $available | ForEach-Object { $_.Tool })
 $tabs = @()
-foreach ($tool in @('codex') + @((Get-HubClaudeProfiles).Values | ForEach-Object { $_.Tool }) + @('opencode')) {
-    $claudeProfile = Get-HubClaudeProfileOfTool $tool
-    $cli = if ($claudeProfile) { 'claude' } else { $tool }
-    if ($tool -notin $requested -or $cli -notin $available) { continue }
-    if ($claudeProfile -and $tool -notin $claudeTools) { continue }
+# One Claude tab: accounts share its history and are switched inside it with Alt-A.
+foreach ($tool in @('codex', 'claude', 'opencode')) {
+    if ($tool -notin $requested -or $tool -notin $available) { continue }
     if ($tabs.Count) { $tabs += ';' }
-    $tabs += @('new-tab', '--title', (Get-HubTabLabel $tool)) + @(Get-HubTabColorArgs $tool) + @('powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$cli.ps1"))
-    # Terminal has no per-tab environment: carry the profile as a script argument.
-    if ($claudeProfile -and $claudeProfile -ne 'personal') { $tabs += @('-Profile', $claudeProfile) }
+    $tabs += @('new-tab', '--title', $tool, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$tool.ps1"))
 }
 if ($tabs.Count) { & $args[0] -w $env:AGENT_SESSION_HUB_WINDOW @tabs }
 if ($showReminder) {

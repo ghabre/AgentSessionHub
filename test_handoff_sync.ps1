@@ -12,6 +12,7 @@ $backend = 'windows'
 $oldWorkConfig = $env:CLAUDE_WORK_CONFIG_DIR
 $oldDevConfig = $env:CLAUDE_DEV_CONFIG_DIR
 $oldClaudeConfig = $env:CLAUDE_CONFIG_DIR
+$oldLocalAppData = $env:LOCALAPPDATA
 $availableTools = @('codex', 'claude', 'opencode')
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-codex.ps1'), [ref]$null, [ref]$null)
 foreach ($name in @('ConvertTo-WslPath', 'ConvertFrom-WslPath', 'New-BashCommand')) {
@@ -25,6 +26,8 @@ function Assert-True($condition, $message) { if (-not $condition) { throw $messa
 try {
     $tmpWin = Join-Path $root "temp O'Brien with spaces"
     $hubStateDir = Join-Path $root 'state'
+    # The active-account file lives under LOCALAPPDATA; never touch the real one.
+    $env:LOCALAPPDATA = Join-Path $root 'localappdata'
     $homeWin = Join-Path $root 'home'
     $claudeWin = Join-Path $homeWin '.claude\projects'
     $codexWin = Join-Path $homeWin '.codex\sessions'
@@ -36,6 +39,7 @@ try {
     [void][IO.Directory]::CreateDirectory($env:CLAUDE_WORK_CONFIG_DIR)
     $env:CLAUDE_DEV_CONFIG_DIR = Join-Path $homeWin "dev O'Brien"
     [void][IO.Directory]::CreateDirectory($env:CLAUDE_DEV_CONFIG_DIR)
+    Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
     $hubTool = 'claude'
     . (Join-Path $PSScriptRoot 'handoff-sync.ps1')
     $engineCopy = Join-Path $tmpWin 'handoff_sync.py'
@@ -68,37 +72,18 @@ try {
     $body = Get-Content $delta.handoff -Raw -Encoding UTF8
     Assert-True ($body.Contains('Source update') -and -not $body.Contains('Original task')) 'Incremental payload duplicated source history.'
 
-    # Profile copies preserve relative paths and bytes, and never overwrite either side.
-    $claudeAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-claude.ps1'), [ref]$null, [ref]$null)
-    $copyFn = $claudeAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Copy-SessionToOtherProfile' }, $true)
-    Invoke-Expression $copyFn.Extent.Text
-    $projects = $claudeWin
-    $nestedSource = Join-Path $projects "project O'Brien\$claudeId.jsonl"
-    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($nestedSource))
-    [IO.File]::WriteAllText($nestedSource, [IO.File]::ReadAllText($sourceFile))
-    $before = [IO.File]::ReadAllText($nestedSource)
-    $copyItem = [pscustomobject]@{ Id = $claudeId; Title = "Task O'Brien"; Cwd = $homeWin; Tr = $nestedSource }
-    $beforeLaunches = $script:launches.Count
-    Copy-SessionToOtherProfile $copyItem 'work'
-    $copiedFile = Join-Path $claudeConfigDirs.work "projects\project O'Brien\$claudeId.jsonl"
-    Assert-True ([IO.File]::ReadAllText($copiedFile) -ceq $before) 'Copy changed the transcript or relative project path.'
-    Assert-True ([IO.File]::ReadAllText($nestedSource) -ceq $before) 'Copy changed the source.'
-    [IO.File]::AppendAllText($copiedFile, 'destination-only')
-    Copy-SessionToOtherProfile $copyItem 'work'
-    Assert-True ($script:launches.Count -eq $beforeLaunches + 1) 'Existing destination was launched or overwritten.'
-    Assert-True ([IO.File]::ReadAllText($copiedFile).EndsWith('destination-only')) 'Copy overwrote destination changes.'
-    Copy-SessionToOtherProfile $copyItem 'dev'
-    Assert-True ([IO.File]::ReadAllText((Join-Path $claudeConfigDirs.dev "projects\project O'Brien\$claudeId.jsonl")) -ceq $before) 'Personal-to-dev copy failed.'
-    $projects = Join-Path $claudeConfigDirs.work 'projects'
-    $returnSource = Join-Path $projects "return-project\$claudeId.jsonl"
-    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($returnSource))
-    [IO.File]::WriteAllText($returnSource, $before)
-    $copyItem.Tr = $returnSource
-    Copy-SessionToOtherProfile $copyItem 'personal'
-    Assert-True ([IO.File]::ReadAllText((Join-Path $claudeWin "return-project\$claudeId.jsonl")) -ceq $before) 'Work-to-personal copy failed.'
+    # The active account is saved state; a missing or unknown account falls back to personal.
+    Assert-True ((Get-HubClaudeActiveAccount) -eq 'personal') 'Default account is not personal.'
+    Set-HubClaudeActiveAccount 'dev'
+    Assert-True ((Get-HubClaudeActiveAccount) -eq 'dev') 'Active account was not saved.'
+    Assert-True ((Get-HubClaudeActiveAccount @('personal', 'work')) -eq 'personal') 'Vanished account was still active.'
+    Set-HubClaudeActiveAccount 'bogus'
+    Assert-True ((Get-HubClaudeActiveAccount) -eq 'personal') 'Unknown account was accepted.'
+    Assert-True ((@(Get-HubClaudeAccounts | ForEach-Object { $_.Label }) -join ',') -eq 'CP,CW,CD') 'Existing account folders were not all offered.'
+    Assert-True ((Get-HubTabLabel 'claude-work') -eq 'CW' -and (Get-HubTabColorArgs 'claude-dev')[0] -eq '--tabColor' -and @(Get-HubTabColorArgs 'codex').Count -eq 0) 'Account tab label or color changed.'
 
-    Assert-True ($claudeAst.ParamBlock.Parameters[0].Name.VariablePath.UserPath -eq 'Profile') 'Claude profile is not a bound script parameter.'
-    # Run the generated scanners/backups against isolated profile dirs, including history.
+    $claudeAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-claude.ps1'), [ref]$null, [ref]$null)
+    # Run the generated scanner/backup against the shared history, including prompt history.
     $backupEvery = 24
     $backupKeep = 10
     foreach ($variable in @('scanSh', 'backupSh')) {
@@ -111,44 +96,28 @@ try {
     [IO.File]::WriteAllText($backupFile, $backupSh)
     $archiveReader = Join-Path $tmpWin 'read-history.sh'
     [IO.File]::WriteAllText($archiveReader, 'tar -xOzf "$1" history.jsonl' + "`n")
-    # Dev has no transcripts yet; seed one so its scan has something to find.
-    $devSeed = Join-Path $claudeConfigDirs.dev "projects\seed\$claudeId.jsonl"
-    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($devSeed))
-    [IO.File]::WriteAllText($devSeed, $before)
-    foreach ($profileName in @('personal', 'work', 'dev')) {
-        $configDir = $claudeConfigDirs[$profileName]
-        $configBash = ConvertTo-WslPath $configDir
-        [IO.File]::WriteAllText((Join-Path $configDir 'history.jsonl'), $profileName)
-        $scanRows = @(& $gitBash (ConvertTo-WslPath $scanFile) all $configBash)
-        Assert-True ($scanRows.Count -gt 0) "No $profileName transcripts scanned."
-        foreach ($scanRow in $scanRows) { Assert-True (($scanRow -split "`t")[1].StartsWith("$configBash/projects/")) 'Scan crossed profile directories.' }
-        $archiveDir = Join-Path $tmpWin "backups\$profileName"
-        $archives = @(& $gitBash (ConvertTo-WslPath $backupFile) (ConvertTo-WslPath $archiveDir) $configBash)
-        Assert-True ($archives.Count -eq 1) "No $profileName backup made."
-        $archiveHistory = @(& $gitBash (ConvertTo-WslPath $archiveReader) $archives[0])
-        Assert-True ($archiveHistory[0] -ceq $profileName) 'Backup included another profile history.'
-        $repeatArchive = @(& $gitBash (ConvertTo-WslPath $backupFile) (ConvertTo-WslPath $archiveDir) $configBash)
-        Assert-True ($repeatArchive.Count -eq 0) 'Backup throttle failed.'
-    }
+    $configBash = ConvertTo-WslPath $claudeConfigDirs.personal
+    [IO.File]::WriteAllText((Join-Path $claudeConfigDirs.personal 'history.jsonl'), 'shared')
+    $scanRows = @(& $gitBash (ConvertTo-WslPath $scanFile) all $configBash)
+    Assert-True ($scanRows.Count -gt 0) 'No transcripts scanned.'
+    foreach ($scanRow in $scanRows) { Assert-True (($scanRow -split "`t")[1].StartsWith("$configBash/projects/")) 'Scan left the shared history.' }
+    $archiveDir = Join-Path $tmpWin 'backups\claude'
+    $archives = @(& $gitBash (ConvertTo-WslPath $backupFile) (ConvertTo-WslPath $archiveDir) $configBash)
+    Assert-True ($archives.Count -eq 1) 'No backup made.'
+    $archiveHistory = @(& $gitBash (ConvertTo-WslPath $archiveReader) $archives[0])
+    Assert-True ($archiveHistory[0] -ceq 'shared') 'Backup missed the prompt history.'
+    $repeatArchive = @(& $gitBash (ConvertTo-WslPath $backupFile) (ConvertTo-WslPath $archiveDir) $configBash)
+    Assert-True ($repeatArchive.Count -eq 0) 'Backup throttle failed.'
 
-    # Execute the real tab builder with a terminal recorder and the isolated config dir.
+    # Execute the real tab builder with a terminal recorder: one Claude tab, no profiles.
     $hubScript = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'start-hub.ps1'))
-    $hubBuilder = [scriptblock]::Create($hubScript.Substring($hubScript.IndexOf('$claudeTools =')).Replace('$PSScriptRoot', "'" + $PSScriptRoot.Replace("'", "''") + "'"))
+    $hubBuilder = [scriptblock]::Create($hubScript.Substring($hubScript.IndexOf('$tabs = @()')).Replace('$PSScriptRoot', "'" + $PSScriptRoot.Replace("'", "''") + "'"))
     function Record-HubTabs { $script:tabArgs = @($args) }
     $available = @('claude')
-    $requested = @('claude', 'claude-work', 'claude-dev')
+    $requested = @('claude')
     $showReminder = $false
     & $hubBuilder 'Record-HubTabs'
-    foreach ($label in @('CP', 'CW', 'CD')) { Assert-True ($label -in $script:tabArgs) "Hub omitted the $label tab." }
-    Assert-True ('work' -in $script:tabArgs -and 'dev' -in $script:tabArgs -and @($script:tabArgs | Where-Object { $_ -eq '--tabColor' }).Count -eq 3) 'Hub omitted a profile argument or tab color.'
-    Assert-True (@($script:tabArgs | Where-Object { $_ -eq (Join-Path $PSScriptRoot 'recent-claude.ps1') }).Count -eq 3) 'Hub did not reuse the Claude picker.'
-    $env:CLAUDE_WORK_CONFIG_DIR = Join-Path $root 'missing-work'
-    & $hubBuilder 'Record-HubTabs'
-    Assert-True ('CW' -notin $script:tabArgs -and 'CD' -in $script:tabArgs) 'Hub showed a nonexistent work config or lost dev.'
-    $env:CLAUDE_WORK_CONFIG_DIR = $claudeConfigDirs.work
-    $requested = @('claude')
-    & $hubBuilder 'Record-HubTabs'
-    Assert-True ('-Profile' -notin $script:tabArgs) 'Personal-only hub behavior changed.'
+    Assert-True ('-Profile' -notin $script:tabArgs -and @($script:tabArgs | Where-Object { $_ -eq (Join-Path $PSScriptRoot 'recent-claude.ps1') }).Count -eq 1) 'Hub did not open exactly one Claude picker.'
 
     # Exercise the generated command through native PowerShell and Git Bash, replacing
     # only the target executable with an argument recorder, never starting Codex.
@@ -172,13 +141,14 @@ try {
         Assert-True ($resumeArgs.Count -eq 4 -and $resumeArgs[2] -eq 'resume' -and $resumeArgs[3] -eq $codexId) 'Plain resume injected a prompt or shifted arguments.'
         $deltaArgs = @(Invoke-Expression $script:launches[2])
         Assert-True ($deltaArgs.Count -eq 5 -and $deltaArgs[3] -eq $codexId -and $deltaArgs[4].Contains($delta.handoff)) 'Resumed launch arguments were damaged.'
-        foreach ($targetTool in @('claude', 'claude-work', 'claude-dev', 'opencode')) {
-            $configDir = $claudeConfigDirs[$(if (Get-HubClaudeProfileOfTool $targetTool) { Get-HubClaudeProfileOfTool $targetTool } else { 'personal' })]
+        # '-' is personal: the launcher must unset CLAUDE_CONFIG_DIR, not pass it through.
+        foreach ($case in @(@('claude', '-', ''), @('claude', $claudeConfigDirs.work, $claudeConfigDirs.work), @('opencode', '-', ''))) {
+            $targetTool, $configDir, $expectedConfig = $case
             $freshArgs = @(Invoke-Expression (New-BashCommand @($syncLaunchWsl, $targetTool, $first.handoff, '-', 'Claude', "Task O'Brien", $configDir)))
             $resumeArgs = @(Invoke-Expression (New-BashCommand @($syncLaunchWsl, $targetTool, '-', 'native-test', 'Claude', "Task O'Brien", $configDir)))
             $deltaArgs = @(Invoke-Expression (New-BashCommand @($syncLaunchWsl, $targetTool, $delta.handoff, 'native-test', 'Claude', "Task O'Brien", $configDir)))
-            if (Get-HubClaudeProfileOfTool $targetTool) {
-                Assert-True ($freshArgs[0] -ceq "CONFIG:$configDir" -and $resumeArgs[0] -ceq "CONFIG:$configDir" -and $deltaArgs[0] -ceq "CONFIG:$configDir") 'Bash handoff lost the selected Claude config directory.'
+            if ($targetTool -eq 'claude') {
+                Assert-True ($freshArgs[0] -ceq "CONFIG:$expectedConfig" -and $resumeArgs[0] -ceq "CONFIG:$expectedConfig" -and $deltaArgs[0] -ceq "CONFIG:$expectedConfig") 'Bash handoff lost the selected Claude config directory.'
                 Assert-True ($freshArgs.Count -eq 2 -and $freshArgs[1].Contains($first.handoff)) 'Fresh Claude launch arguments were damaged.'
                 Assert-True ($resumeArgs.Count -eq 3 -and $resumeArgs[2] -eq 'native-test') 'Plain Claude resume injected a prompt.'
                 Assert-True ($deltaArgs.Count -eq 4 -and $deltaArgs[3].Contains($delta.handoff)) 'Claude delta arguments were damaged.'
@@ -190,14 +160,19 @@ try {
         }
 
         function claude { "CONFIG:$env:CLAUDE_CONFIG_DIR"; $args }
+        $env:CLAUDE_CONFIG_DIR = 'leaked from the login shell'
         foreach ($profileName in @('personal', 'work', 'dev')) {
-            $expectedDir = $claudeConfigDirs[$profileName]
+            $expectedDir = if ($profileName -eq 'personal') { '' } else { $claudeConfigDirs[$profileName] }
             $profileArgs = @(Invoke-Expression (New-HubClaudeCommand "claude --resume $claudeId" $profileName))
             Assert-True ($profileArgs.Count -eq 3 -and $profileArgs[0] -ceq "CONFIG:$expectedDir" -and $profileArgs[2] -eq $claudeId) 'Native Claude profile or resume arguments were damaged.'
         }
         # Both picker sources must launch fresh handoffs in the selected profile.
         foreach ($sourceTool in @('codex', 'opencode')) {
-            foreach ($targetTool in @('claude', 'claude-work', 'claude-dev')) {
+            # Accounts share one Claude destination, so a second pending OpenCode transfer
+            # would rightly wait for the first; Codex is already synchronized and resumes.
+            foreach ($activeAccount in $(if ($sourceTool -eq 'codex') { @('personal', 'work', 'dev') } else { @('dev') })) {
+                $targetTool = 'claude'
+                Set-HubClaudeActiveAccount $activeAccount
                 $hubTool = $sourceTool
                 $id = if ($sourceTool -eq 'codex') { $codexId } else { 'ses_profile' }
                 $opencodeDbWsl = "$bashHome/override.db"
@@ -219,10 +194,10 @@ with sqlite3.connect(sys.argv[1]) as db:
                 $profileItems = @([pscustomobject]@{ Id = $id; Title = "Profile O'Brien"; Cwd = $homeWin })
                 $launchCount = $script:launches.Count
                 Invoke-HubTransfer $targetTool $profileItems $homeWin
-                Assert-True ($script:launches.Count -eq $launchCount + 1) "$sourceTool to $targetTool did not launch."
+                Assert-True ($script:launches.Count -eq $launchCount + 1) "$sourceTool to $activeAccount did not launch."
                 $profileArgs = @(Invoke-Expression $script:launches[-1])
-                $expectedDir = $claudeConfigDirs[(Get-HubClaudeProfileOfTool $targetTool)]
-                Assert-True ($profileArgs[0] -ceq "CONFIG:$expectedDir") 'Native handoff selected the wrong Claude profile.'
+                $expectedDir = if ($activeAccount -eq 'personal') { '' } else { $claudeConfigDirs[$activeAccount] }
+                Assert-True ($profileArgs[0] -ceq "CONFIG:$expectedDir") 'Native handoff ignored the active Claude account.'
             }
         }
         # The WSL command quoting runs through Bash using a CLI stub and no credentials.
@@ -230,8 +205,8 @@ with sqlite3.connect(sys.argv[1]) as db:
         $shellFileBash = ConvertTo-WslPath $shellFile
         $backend = 'wsl'
         foreach ($profileName in @('personal', 'work', 'dev')) {
-            $expectedDir = $claudeConfigDirs[$profileName]
-            $command = New-HubClaudeCommand "claude --resume $claudeId" $profileName
+            $expectedDir = if ($profileName -eq 'personal') { '' } else { $claudeConfigDirs[$profileName] }
+            $command = 'export CLAUDE_CONFIG_DIR=leaked; ' + (New-HubClaudeCommand "claude --resume $claudeId" $profileName)
             $shellTest = "#!/bin/bash`nclaude() { printf '%s\n' `"CONFIG:`$CLAUDE_CONFIG_DIR`" `"`$@`"; }`n$command`n"
             [IO.File]::WriteAllText($shellFile, $shellTest.Replace("`r`n", "`n"))
             $profileArgs = @(& $gitBash $shellFileBash)
@@ -240,10 +215,11 @@ with sqlite3.connect(sys.argv[1]) as db:
         $backend = 'windows'
 
     } finally { $env:PATH = $oldPath }
-    Write-Output 'Windows integration passed: first transfer, automatic resume, delta, spaces/apostrophes, native launch arguments for all three tools, profile isolation/copies, scans/backups, hub tabs, Claude profile quoting.'
+    Write-Output 'Windows integration passed: first transfer, automatic resume, delta, spaces/apostrophes, native launch arguments for all three tools, active account, shared scans/backups, hub tabs, Claude account quoting.'
 } finally {
     $env:CLAUDE_WORK_CONFIG_DIR = $oldWorkConfig
     $env:CLAUDE_DEV_CONFIG_DIR = $oldDevConfig
     $env:CLAUDE_CONFIG_DIR = $oldClaudeConfig
+    $env:LOCALAPPDATA = $oldLocalAppData
     if (Test-Path $root) { Remove-Item $root -Recurse -Force }
 }

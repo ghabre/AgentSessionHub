@@ -1,4 +1,7 @@
 import json
+import os
+import shutil
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
@@ -7,6 +10,8 @@ import tempfile
 import unittest
 
 from handoff_sync import plan
+
+LINK_SCRIPT = Path(__file__).with_name('link-claude-accounts.sh')
 
 
 IDS = {'codex': '11111111-1111-1111-1111-111111111111',
@@ -60,81 +65,6 @@ class TransferTests(unittest.TestCase):
 
     def payload(self, result):
         return Path(result['handoff']).read_text()
-
-    def test_duplicate_claude_ids_keep_profile_keys_and_cached_events_separate(self):
-        self.request['claude_work_root'] = str(self.root / 'work')
-        self.append('claude', 'personal task')
-        work = Path(self.request['claude_work_root'])
-        work.mkdir()
-        # A literal copied transcript includes the same native message UUID.
-        personal = Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')
-        row = json.loads(personal.read_text())
-        row['uuid'] = 'same-native-message'
-        personal.write_text(json.dumps(row) + '\n')
-        (work / personal.name).write_bytes(personal.read_bytes())
-        first = self.transfer([self.key('claude')], 'codex')
-        other = self.transfer(['claude-work:' + IDS['claude']], 'codex')
-        self.assertEqual('ready', other['status'])
-        self.assertIn('claude-work:' + IDS['claude'], self.payload(other))
-        self.assertNotEqual(first['handoff'], other['handoff'])
-        with sqlite3.connect(self.request['state_dir'] + '/sync.db') as db:
-            cached = [json.loads(row[0]) for row in db.execute('SELECT data FROM cache')]
-        sessions = {s['key']: s for s in cached if s['id'] == IDS['claude']}
-        self.assertEqual({'claude:' + IDS['claude'], 'claude-work:' + IDS['claude']}, set(sessions))
-        events = [s['events'][0]['id'] for s in sessions.values()]
-        self.assertEqual(2, len(set(events)))
-
-    def test_dev_profile_is_a_separate_claude_destination(self):
-        self.request['claude_work_root'] = str(self.root / 'work')
-        self.request['claude_dev_root'] = str(self.root / 'dev')
-        self.append('claude', 'shared task')
-        personal = Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')
-        for name in ('work', 'dev'):
-            (self.root / name).mkdir()
-            (self.root / name / personal.name).write_bytes(personal.read_bytes())
-        result = self.transfer(['claude-dev:' + IDS['claude']], 'codex')
-        self.assertEqual('ready', result['status'])
-        self.assertIn('claude-dev:' + IDS['claude'], self.payload(result))
-        with sqlite3.connect(self.request['state_dir'] + '/sync.db') as db:
-            cached = [json.loads(row[0]) for row in db.execute('SELECT data FROM cache')]
-        keys = {s['key'] for s in cached if s['id'] == IDS['claude']}
-        self.assertEqual({'claude:', 'claude-work:', 'claude-dev:'}, {k.split(':')[0] + ':' for k in keys})
-
-    def test_claude_receipts_and_resume_targets_stay_in_selected_profile(self):
-        self.request['claude_work_root'] = str(self.root / 'work')
-        self.append('codex', 'task')
-        first = self.transfer([self.key('codex')], 'claude')
-        self.accept(first, 'claude')
-        work = Path(self.request['claude_work_root'])
-        work.mkdir()
-        personal = Path(self.request['claude_root']) / (IDS['claude'] + '.jsonl')
-        (work / personal.name).write_bytes(personal.read_bytes())
-        result = self.transfer([self.key('codex')], 'claude-work')
-        self.assertEqual('ready', result['status'])
-        self.assertIsNone(result['target'])
-        self.assertIsNotNone(result['handoff'])
-        row = {'type': 'user', 'cwd': str(self.root), 'message': {'content': 'Read ' + result['handoff']}}
-        with (work / personal.name).open('a') as stream:
-            stream.write(json.dumps(row) + '\n')
-        repeat = self.transfer([self.key('codex')], 'claude-work')
-        self.assertEqual('claude-work:' + IDS['claude'], repeat['target']['key'])
-        self.assertIsNone(repeat['handoff'])
-        personal_repeat = self.transfer([self.key('codex')], 'claude')
-        self.assertEqual(self.key('claude'), personal_repeat['target']['key'])
-        self.assertIsNone(personal_repeat['handoff'])
-
-    def test_work_background_continuation_does_not_link_personal_successor(self):
-        self.request['claude_work_root'] = str(self.root / 'work')
-        successor = '33333333-3333-3333-3333-333333333333'
-        self.append('claude', 'personal successor', sid=successor)
-        work = Path(self.request['claude_work_root'])
-        work.mkdir()
-        row = {'type': 'user', 'cwd': str(self.root), 'continuedInSessionId': successor,
-               'message': {'content': 'work predecessor'}}
-        (work / (IDS['claude'] + '.jsonl')).write_text(json.dumps(row) + '\n')
-        result = self.transfer(['claude-work:' + IDS['claude']], 'claude')
-        self.assertIsNone(result['target'])
-        self.assertIn('work predecessor', self.payload(result))
 
     def test_all_six_directions_repeat_and_round_trip(self):
         for source in IDS:
@@ -418,6 +348,51 @@ class TransferTests(unittest.TestCase):
         self.accept(next_transfer, 'codex')
         # Subsequent runs must not replace the new ledger with the older copy.
         self.assertIsNone(self.transfer([self.key('claude')], 'codex')['handoff'])
+
+
+
+@unittest.skipUnless(shutil.which('bash') and os.name != 'nt', 'needs Linux bash symlinks')
+class LinkAccountTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.shared = self.root / 'shared'
+        (self.shared / 'projects' / 'p').mkdir(parents=True)
+        (self.shared / 'projects' / 'p' / 'shared.jsonl').write_text('shared')
+        (self.shared / 'settings.json').write_text('shared settings')
+        self.account = self.root / "work O'Brien"
+        (self.account / 'projects' / 'old').mkdir(parents=True)
+        (self.account / 'projects' / 'old' / 'own.jsonl').write_text('own')
+        (self.account / 'settings.json').write_text('own settings')
+        (self.account / '.credentials.json').write_text('login')
+        (self.account / '.claude.json').write_text('{}')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def link(self, *accounts):
+        result = subprocess.run(['bash', str(LINK_SCRIPT), str(self.shared), *map(str, accounts)],
+                                capture_output=True, text=True, check=True)
+        return result.stdout.splitlines()
+
+    def test_links_history_keeps_login_and_sets_aside_without_deleting(self):
+        out = self.link(self.account, self.root / 'missing')
+        self.assertEqual('shared', (self.account / 'projects' / 'p' / 'shared.jsonl').read_text())
+        self.assertTrue((self.account / 'sessions').is_symlink())
+        self.assertEqual('login', (self.account / '.credentials.json').read_text())
+        self.assertFalse((self.account / '.credentials.json').is_symlink())
+        self.assertFalse((self.account / '.claude.json').is_symlink())
+        aside = [Path(line.split(':', 1)[1]) for line in out if line.startswith('SET_ASIDE:')]
+        self.assertEqual({'projects', 'settings.json'}, {p.name.split('.pre-shared-')[0] for p in aside})
+        own = next(p for p in aside if p.name.startswith('projects'))
+        self.assertEqual('own', (own / 'old' / 'own.jsonl').read_text())
+        self.assertEqual([], self.link(self.account))  # idempotent
+
+    def test_account_with_live_session_is_left_alone(self):
+        (self.account / 'sessions').mkdir()
+        (self.account / 'sessions' / f'{os.getpid()}.json').write_text('{}')
+        self.assertEqual([f'LIVE:{self.account}'], self.link(self.account))
+        self.assertFalse((self.account / 'projects').is_symlink())
 
 
 if __name__ == '__main__':

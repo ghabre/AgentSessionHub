@@ -13,6 +13,8 @@ This repository contains Windows launchers and PowerShell utilities for Codex, C
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
 
+Claude accounts (personal CP, work CW, dev CD; defined in `Get-HubClaudeProfiles` in `hub-tools.ps1`) share one session history in `~/.claude`. Each non-personal account keeps only its login in `~/.claude-<name>` (or `CLAUDE_<NAME>_CONFIG_DIR`), and `link-claude-accounts.sh` links everything else to `~/.claude`; it never deletes, renaming anything in the way to `*.pre-shared-<stamp>`, and skips accounts with live sessions. Alt-A in the Claude picker sets the active account (saved in `%LOCALAPPDATA%\AgentSessionHub\claude-account.txt`), which every Claude launch and handoff uses. Personal launches unset `CLAUDE_CONFIG_DIR` because its account file is `~/.claude.json`.
+
 OpenCode stores all projects in one SQLite database (`~/.local/share/opencode/opencode.db` by default); `recent-opencode.ps1` reads it with Python 3 and snapshots it through SQLite's online backup API. Its global instructions live in `~/.config/opencode/AGENTS.md`, which points at the same shared memory file used by Codex and Claude.
 
 ## Paired Script Changes
