@@ -38,47 +38,82 @@ function Show-HubMissingTools([string[]]$tools) {
     return $shown
 }
 
+# One row per Claude login, in display order. personal is the stock ~/.claude; every other
+# profile reads CLAUDE_<NAME>_CONFIG_DIR (default ~/.claude-<name>) and only appears when
+# listed in AGENT_HUB_TOOLS and that directory exists. Key is the hotkey that targets it.
+function Get-HubClaudeProfiles {
+    [ordered]@{
+        personal = [pscustomobject]@{ Name = 'personal'; Tool = 'claude';      Label = 'CP'; Key = 'alt-c'; Color = '#D97757' }
+        work     = [pscustomobject]@{ Name = 'work';     Tool = 'claude-work'; Label = 'CW'; Key = 'alt-w'; Color = '#2F81F7' }
+        dev      = [pscustomobject]@{ Name = 'dev';      Tool = 'claude-dev';  Label = 'CD'; Key = 'alt-d'; Color = '#3FB950' }
+    }
+}
+
+# 'claude-work' -> 'work'; $null for codex/opencode.
+function Get-HubClaudeProfileOfTool($tool) {
+    foreach ($p in (Get-HubClaudeProfiles).Values) { if ($p.Tool -eq $tool) { return $p.Name } }
+}
+
+# Per-profile env override: CLAUDE_<suffix> for personal, CLAUDE_<NAME>_<suffix> otherwise.
+function Get-HubClaudeProfileEnv($profile, $suffix) {
+    $name = if ($profile -eq 'personal') { "CLAUDE_$suffix" } else { "CLAUDE_$($profile.ToUpperInvariant())_$suffix" }
+    [Environment]::GetEnvironmentVariable($name)
+}
+
 # Returns a backend-native config path; WSL overrides may come from its login shell.
-function Get-HubClaudeConfigDir([ValidateSet('personal', 'work')]$profile = 'personal') {
+function Get-HubClaudeConfigDir([ValidateSet('personal', 'work', 'dev')]$profile = 'personal') {
+    $dirName = if ($profile -eq 'personal') { '.claude' } else { ".claude-$profile" }
+    # Personal never takes an override: CLAUDE_CONFIG_DIR is what we export to select a profile.
+    $override = if ($profile -ne 'personal') { Get-HubClaudeProfileEnv $profile 'CONFIG_DIR' }
+    if ($override) { return $override }
     $nativeWindows = $env:AGENT_HUB_BACKEND -eq 'windows' -or $backend -eq 'windows'
     if ($nativeWindows) {
         $profileHome = if ($bashHome) { ConvertFrom-WslPath $bashHome } else { $HOME }
-        if ($profile -eq 'work' -and $env:CLAUDE_WORK_CONFIG_DIR) { return $env:CLAUDE_WORK_CONFIG_DIR }
-        return Join-Path $profileHome $(if ($profile -eq 'work') { '.claude-work' } else { '.claude' })
+        return Join-Path $profileHome $dirName
     }
-    if ($profile -eq 'work' -and $env:CLAUDE_WORK_CONFIG_DIR) { return $env:CLAUDE_WORK_CONFIG_DIR }
     if ($profile -eq 'personal' -and $bashHome) { return "$bashHome/.claude" }
-    $wslArgs = @()
-    if ($env:WSL_DISTRO) { $wslArgs += @('-d', $env:WSL_DISTRO) }
-    # Encode the probe: Windows PowerShell native marshalling strips embedded shell quotes.
-    $probe = 'printf "%s\n" "HUB_CONFIG:${CLAUDE_WORK_CONFIG_DIR-}" "HUB_HOME:/home/${WSL_USER:-$(id -un)}"'
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($probe))
-    $output = @(& wsl.exe @wslArgs --exec bash -lic "eval `$(echo $encoded | base64 -d)")
-    if ($LASTEXITCODE -ne 0) { throw "Could not resolve Claude $profile config directory." }
-    $config = @($output | Where-Object { "$_".StartsWith('HUB_CONFIG:') })
-    $homeLine = @($output | Where-Object { "$_".StartsWith('HUB_HOME:') })
+    # One login-shell probe per process covers every profile's override and the home dir.
+    if (-not $script:hubClaudeProbe) {
+        $wslArgs = @()
+        if ($env:WSL_DISTRO) { $wslArgs += @('-d', $env:WSL_DISTRO) }
+        $lines = @((Get-HubClaudeProfiles).Keys | Where-Object { $_ -ne 'personal' } | ForEach-Object {
+            $upper = $_.ToUpperInvariant()
+            "`"HUB_CONFIG_${upper}:`${CLAUDE_${upper}_CONFIG_DIR-}`""
+        })
+        # Encode the probe: Windows PowerShell native marshalling strips embedded shell quotes.
+        $probe = 'printf "%s\n" ' + ($lines -join ' ') + ' "HUB_HOME:/home/${WSL_USER:-$(id -un)}"'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($probe))
+        $output = @(& wsl.exe @wslArgs --exec bash -lic "eval `$(echo $encoded | base64 -d)")
+        if ($LASTEXITCODE -ne 0) { throw "Could not resolve Claude $profile config directory." }
+        $script:hubClaudeProbe = $output
+    }
+    $prefix = "HUB_CONFIG_$($profile.ToUpperInvariant()):"
+    $config = @($script:hubClaudeProbe | Where-Object { "$_".StartsWith($prefix) })
+    $homeLine = @($script:hubClaudeProbe | Where-Object { "$_".StartsWith('HUB_HOME:') })
     if (-not $homeLine.Count) { throw 'Claude config directory probe returned no home directory.' }
-    if ($profile -eq 'work' -and $config.Count -and "$($config[-1])".Substring(11)) { return "$($config[-1])".Substring(11) }
+    if ($config.Count -and "$($config[-1])".Substring($prefix.Length)) { return "$($config[-1])".Substring($prefix.Length) }
     $profileHome = if ($bashHome) { $bashHome } elseif ($env:WSL_USER) { "/home/$env:WSL_USER" } else { "$($homeLine[-1])".Substring(9) }
-    return "$profileHome/" + $(if ($profile -eq 'work') { '.claude-work' } else { '.claude' })
+    return "$profileHome/$dirName"
 }
 
-# Both Claude profiles run the same CLI, so label and color their tabs. Claude Code may
-# replace the tab title with its own, but Windows Terminal keeps the tab color.
+# Both Claude profiles run the same CLI, so label (CP/CW/CD) and color their tabs. Claude
+# Code may replace the tab title with its own, but Windows Terminal keeps the tab color.
 function Get-HubTabLabel($tool) {
-    switch ($tool) { 'claude' { 'claude personal' } 'claude-work' { 'claude work' } default { $tool } }
+    $profile = Get-HubClaudeProfileOfTool $tool
+    if ($profile) { (Get-HubClaudeProfiles)[$profile].Label } else { $tool }
 }
 
 function Get-HubTabColorArgs($tool) {
-    $color = switch ($tool) {
-        'claude' { if ($env:CLAUDE_TAB_COLOR) { $env:CLAUDE_TAB_COLOR } else { '#D97757' } }
-        'claude-work' { if ($env:CLAUDE_WORK_TAB_COLOR) { $env:CLAUDE_WORK_TAB_COLOR } else { '#2F81F7' } }
-    }
-    if ($color) { @('--tabColor', $color) } else { @() }
+    $profile = Get-HubClaudeProfileOfTool $tool
+    if (-not $profile) { return @() }
+    $color = Get-HubClaudeProfileEnv $profile 'TAB_COLOR'
+    @('--tabColor', $(if ($color) { $color } else { (Get-HubClaudeProfiles)[$profile].Color }))
 }
 
-function Test-HubClaudeWork {
-    $configDir = Get-HubClaudeConfigDir 'work'
+# personal is always offered; the others need their config directory to exist.
+function Test-HubClaudeProfile($profile) {
+    if ($profile -eq 'personal') { return $true }
+    $configDir = Get-HubClaudeConfigDir $profile
     if ($env:AGENT_HUB_BACKEND -eq 'windows' -or $backend -eq 'windows') { return Test-Path -LiteralPath $configDir -PathType Container }
     $wslArgs = @()
     if ($env:WSL_DISTRO) { $wslArgs += @('-d', $env:WSL_DISTRO) }
@@ -86,4 +121,10 @@ function Test-HubClaudeWork {
     $quoted = "'" + $configDir.Replace("'", "'\''") + "'"
     & wsl.exe @wslArgs --exec bash -c "test -d $quoted"
     return $LASTEXITCODE -eq 0
+}
+
+# Profiles a picker can hand off to: requested in AGENT_HUB_TOOLS, CLI installed, dir present.
+function Get-HubClaudeTargets([string[]]$requested, [string[]]$available) {
+    if ('claude' -notin $available) { return @() }
+    @((Get-HubClaudeProfiles).Values | Where-Object { $_.Tool -in $requested -and (Test-HubClaudeProfile $_.Name) })
 }

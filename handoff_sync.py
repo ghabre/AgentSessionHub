@@ -16,7 +16,8 @@ import tempfile
 import time
 import uuid
 
-TOOLS = ('codex', 'claude', 'claude-work', 'opencode')
+CLAUDE_TOOLS = ('claude', 'claude-work', 'claude-dev')
+TOOLS = ('codex',) + CLAUDE_TOOLS + ('opencode',)
 MARKER = re.compile(r'hub-transfer-([0-9a-f]{32})\.md')
 LEGACY = re.compile(r'recent-(codex|claude|opencode)-handoff/((?:ses_[A-Za-z0-9]+|[0-9a-f-]{36}))-\d{8}-\d{6}\.md')
 
@@ -184,7 +185,8 @@ def read_jsonl(path, tool):
 
 def read_sessions(request, db):
     sessions = {}
-    for tool, root_name in (('codex', 'codex_root'), ('claude', 'claude_root'), ('claude-work', 'claude_work_root')):
+    for tool in ('codex',) + CLAUDE_TOOLS:
+        root_name = tool.replace('-', '_') + '_root'
         if not request.get(root_name):
             continue
         root = Path(native_path(request[root_name]))
@@ -193,7 +195,7 @@ def read_sessions(request, db):
                 continue
             stat = path.stat()
             signature = f'4:{stat.st_mtime_ns}:{stat.st_size}'
-            if tool == 'claude-work':
+            if tool.startswith('claude-'):
                 signature = tool + ':' + signature
             cached = db.execute('SELECT signature, data FROM cache WHERE path = ?', (str(path),)).fetchone()
             if cached and cached[0] == signature:

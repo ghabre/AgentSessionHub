@@ -51,11 +51,12 @@
 # Usage: run under Windows PowerShell, e.g. a shortcut with target:
 #   powershell.exe -NoExit -ExecutionPolicy Bypass -File "C:\path\to\recent-claude.ps1"
 
-# -Profile work uses CLAUDE_WORK_CONFIG_DIR (default ~/.claude-work) and its own
-# backups\claude-work directory, overridable with CLAUDE_WORK_BACKUP_DIR.
-# Tabs are labelled "claude personal"/"claude work" and colored per profile; override the
-# colors with CLAUDE_TAB_COLOR / CLAUDE_WORK_TAB_COLOR (#RRGGBB).
-param([ValidateSet('personal', 'work')][string]$Profile = 'personal')
+# -Profile work|dev uses CLAUDE_WORK_CONFIG_DIR / CLAUDE_DEV_CONFIG_DIR (default
+# ~/.claude-work, ~/.claude-dev) and its own backups\claude-work|claude-dev directory,
+# overridable with CLAUDE_WORK_BACKUP_DIR / CLAUDE_DEV_BACKUP_DIR. Profiles are defined in
+# Get-HubClaudeProfiles (hub-tools.ps1). Tabs are labelled CP/CW/CD and colored per
+# profile; override with CLAUDE_TAB_COLOR / CLAUDE_WORK_TAB_COLOR / CLAUDE_DEV_TAB_COLOR.
+param([ValidateSet('personal', 'work', 'dev')][string]$Profile = 'personal')
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
@@ -182,10 +183,9 @@ function Invoke-Git {
 $claudeConfigDir = Get-HubClaudeConfigDir $Profile
 $claude = if ($backend -eq 'wsl') { ConvertFrom-WslPath $claudeConfigDir } else { $claudeConfigDir }
 $claudeConfigDirBash = if ($backend -eq 'windows') { ConvertTo-WslPath $claudeConfigDir } else { $claudeConfigDir }
-$profileTool = if ($Profile -eq 'work') { 'claude-work' } else { 'claude' }
-$otherProfile = if ($Profile -eq 'work') { 'personal' } else { 'work' }
-$profileCopyKey = if ($Profile -eq 'work') { 'alt-c' } else { 'alt-w' }
-$otherProfileAvailable = if ($otherProfile -eq 'work') { Test-HubClaudeWork } else { $true }
+$profileTool = (Get-HubClaudeProfiles)[$Profile].Tool
+# Every other existing profile is a copy target, keyed by the destination's hotkey.
+$copyTargets = @((Get-HubClaudeProfiles).Values | Where-Object { $_.Name -ne $Profile -and (Test-HubClaudeProfile $_.Name) })
 $projects = "$claude\projects"
 $sessDir  = "$claude\sessions"
 $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
@@ -283,8 +283,8 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), $(if ($otherProfileAvailable) { $profileCopyKey }), 'alt-f', 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), $(if ($otherProfileAvailable) { "${profileCopyKey}: copy to $otherProfile" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
+$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), @($copyTargets | ForEach-Object { $_.Key }), 'alt-f', 'alt-h', 'alt-s') -join ','
+$headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), @($copyTargets | ForEach-Object { "$($_.Key): copy to $($_.Label)" }), 'alt-f: copy', 'alt-h: hide', 'alt-s: show', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -293,7 +293,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --multi \
     --expect=$expectKeys \
 $clickBinds
-    --prompt='$profileTool sessions> ' --reverse \
+    --prompt='$(Get-HubTabLabel $profileTool) sessions> ' --reverse \
     --header='$headerActions' \
     > "`$2"
 "@ -replace "`r`n","`n"
@@ -305,7 +305,7 @@ tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
     --multi \
 $clickBinds
-    --prompt='hidden $profileTool sessions> ' --reverse \
+    --prompt='hidden $(Get-HubTabLabel $profileTool) sessions> ' --reverse \
     --header='enter: show | tab: mark multiple | esc: cancel' \
     > "`$2"
 "@ -replace "`r`n","`n"
@@ -372,7 +372,7 @@ $clickBinds
 # survive `wsl --unregister`, a VHD corruption, or a distro rebuild. ~1.7s and ~26MB per
 # snapshot at 100MB of transcripts, so it runs inline at startup rather than in the
 # background. Override the location with $env:CLAUDE_BACKUP_DIR.
-$backupOverride = if ($Profile -eq 'work') { $env:CLAUDE_WORK_BACKUP_DIR } else { $env:CLAUDE_BACKUP_DIR }
+$backupOverride = Get-HubClaudeProfileEnv $Profile 'BACKUP_DIR'
 $backupDir = if ($backupOverride) { $backupOverride } else { Join-Path $PSScriptRoot "backups\$profileTool" }
 $backupDirWsl = ConvertTo-WslPath $backupDir
 $backupEvery  = 24   # hours between snapshots
@@ -849,10 +849,10 @@ function ConvertTo-ChatMarkdown($msgs) {
 }
 
 
-function Copy-SessionToOtherProfile($item) {
-    $targetConfig = Get-HubClaudeConfigDir $otherProfile
+function Copy-SessionToOtherProfile($item, $targetProfile) {
+    $targetConfig = Get-HubClaudeConfigDir $targetProfile
     $targetRoot = if ($backend -eq 'wsl') { ConvertFrom-WslPath $targetConfig } else { $targetConfig }
-    if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Claude $otherProfile config directory does not exist: $targetRoot" }
+    if (-not (Test-Path -LiteralPath $targetRoot -PathType Container)) { throw "Claude $targetProfile config directory does not exist: $targetRoot" }
     $sourceRoot = [IO.Path]::GetFullPath($projects).TrimEnd('\') + '\'
     $source = [IO.Path]::GetFullPath($item.Tr)
     if (-not $source.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Transcript is outside this profile projects directory.' }
@@ -864,8 +864,8 @@ function Copy-SessionToOtherProfile($item) {
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
     # File.Copy refuses overwrite, including a destination created after the check.
     [IO.File]::Copy($source, $destination, $false)
-    $targetTool = if ($otherProfile -eq 'work') { 'claude-work' } else { 'claude' }
-    Open-WtTab "$(Get-HubTabLabel $targetTool): $($item.Title)" $item.Cwd (New-HubClaudeCommand "claude --resume $($item.Id)" $otherProfile) $targetTool
+    $targetTool = (Get-HubClaudeProfiles)[$targetProfile].Tool
+    Open-WtTab "$(Get-HubTabLabel $targetTool): $($item.Title)" $item.Cwd (New-HubClaudeCommand "claude --resume $($item.Id)" $targetProfile) $targetTool
 }
 
 function Invoke-Handoff($tool, $id, $cwd, $transcript, $title) {
@@ -1207,8 +1207,9 @@ while ($true) {
         $item
     })
     $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
-    if ($key -eq $profileCopyKey) {
-        foreach ($item in $realItems) { Copy-SessionToOtherProfile $item }
+    $copyTarget = $copyTargets | Where-Object { $_.Key -eq $key } | Select-Object -First 1
+    if ($copyTarget) {
+        foreach ($item in $realItems) { Copy-SessionToOtherProfile $item $copyTarget.Name }
         continue
     }
     if ($realItems.Count -ge 2) {

@@ -1,8 +1,8 @@
-$claudePersonalConfigDir = Get-HubClaudeConfigDir 'personal'
-$claudeWorkConfigDir = Get-HubClaudeConfigDir 'work'
+$claudeConfigDirs = @{}
+foreach ($claudeProfile in (Get-HubClaudeProfiles).Keys) { $claudeConfigDirs[$claudeProfile] = Get-HubClaudeConfigDir $claudeProfile }
 
-function New-HubClaudeCommand($command, [ValidateSet('personal', 'work')]$profile = 'personal') {
-    $configDir = if ($profile -eq 'work') { $claudeWorkConfigDir } else { $claudePersonalConfigDir }
+function New-HubClaudeCommand($command, [ValidateSet('personal', 'work', 'dev')]$profile = 'personal') {
+    $configDir = $claudeConfigDirs[$profile]
     # Escape for the destination shell; wt.exe receives this whole command as one argument.
     if ($backend -eq 'windows') { return "`$env:CLAUDE_CONFIG_DIR = '" + $configDir.Replace("'", "''") + "'; " + $command }
     return "export CLAUDE_CONFIG_DIR='" + $configDir.Replace("'", "'\''") + "'; " + $command
@@ -49,7 +49,7 @@ case "$1" in
             exec codex -c tui.fullscreen_transcript=false resume "$3"
         fi
         exec codex -c tui.fullscreen_transcript=false "$prompt" ;;
-    claude|claude-work)
+    claude|claude-*)
         export CLAUDE_CONFIG_DIR="$6"
         if [ -n "$3" ]; then
             if [ -n "$2" ]; then exec claude --resume "$3" "$prompt"; fi
@@ -81,7 +81,7 @@ function Get-HubTransferPlan($request) {
 
 function Invoke-HubTransfer($tool, $items, $cwd) {
     try {
-        $targetCli = if ($tool -eq 'claude-work') { 'claude' } else { $tool }
+        $targetCli = if (Get-HubClaudeProfileOfTool $tool) { 'claude' } else { $tool }
         if ($targetCli -notin $availableTools) { throw "$tool is unavailable in the $backend backend. Install it before transferring a conversation." }
         $scope = if ($backend -eq 'wsl') { "wsl-$distro" } else { 'windows' }
         $stateName = "sync-" + ($scope -replace '[^A-Za-z0-9._-]', '_')
@@ -89,12 +89,15 @@ function Invoke-HubTransfer($tool, $items, $cwd) {
             scope = $stateName
             legacy_state_dir = ConvertTo-WslPath (Join-Path $hubStateDir $stateName)
             codex_root = "$bashHome/.codex/sessions"
-            claude_root = $(if ($backend -eq 'windows') { ConvertTo-WslPath $claudePersonalConfigDir } else { $claudePersonalConfigDir }) + '/projects'
-            claude_work_root = $(if ($backend -eq 'windows') { ConvertTo-WslPath $claudeWorkConfigDir } else { $claudeWorkConfigDir }) + '/projects'
             opencode_db = $opencodeDbWsl
             sources = @($items | ForEach-Object { "${hubTool}:$($_.Id)" })
             tool = $tool
             preview = $true
+        }
+        # claude_root, claude_work_root, claude_dev_root: one transcript root per profile.
+        foreach ($claudeProfile in (Get-HubClaudeProfiles).Values) {
+            $dir = $claudeConfigDirs[$claudeProfile.Name]
+            $request[$claudeProfile.Tool.Replace('-', '_') + '_root'] = $(if ($backend -eq 'windows') { ConvertTo-WslPath $dir } else { $dir }) + '/projects'
         }
         Write-Host 'Checking conversation synchronization...'
         $plan = Get-HubTransferPlan $request
@@ -154,7 +157,9 @@ $clickBinds
         if (-not $title) { $title = 'untitled' }
         $title = $title -replace '[\r\n\]]', ' '
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }
-        $configDir = if ($tool -eq 'claude-work') { $claudeWorkConfigDir } else { $claudePersonalConfigDir }
+        # Non-Claude targets ignore it; the launcher still takes a positional value.
+        $targetProfile = Get-HubClaudeProfileOfTool $tool
+        $configDir = $claudeConfigDirs[$(if ($targetProfile) { $targetProfile } else { 'personal' })]
         $command = New-BashCommand @($syncLaunchWsl, $tool, $handoffArg, $resumeId, $label, $title, $configDir)
         if ($backend -eq 'windows') {
             # Run the CLI in the destination PowerShell profile, just like normal
