@@ -33,8 +33,8 @@ try {
     $tmpWsl = ConvertTo-WslPath $tmpWin
     $bashHome = ConvertTo-WslPath $homeWin
     $opencodeDbWsl = "$bashHome/missing.db"
-    $devWin = Join-Path $homeWin ".claude-dev O'Brien"
-    New-Item -ItemType Directory $devWin, (Join-Path $homeWin ".claude-work O'Brien") | Out-Null
+    $devWin = Join-Path $homeWin '.claude-2'
+    New-Item -ItemType Directory $devWin, (Join-Path $homeWin '.claude-3'), (Join-Path $homeWin '.claude-notes') | Out-Null
     [IO.File]::WriteAllText((Join-Path $devWin '.claude.json'), '{ "oauthAccount": { "emailAddress": "dev@example.com" } }')
     Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
     $hubTool = 'claude'
@@ -69,9 +69,9 @@ try {
     $body = Get-Content $delta.handoff -Raw -Encoding UTF8
     Assert-True ($body.Contains('Source update') -and -not $body.Contains('Original task')) 'Incremental payload duplicated source history.'
 
-    # Accounts are ~/.claude plus every ~/.claude-* folder; a new one is numbered and listed last.
+    # Accounts are ~/.claude plus every numbered ~/.claude-<n> folder; a new one takes the next number.
     $accounts = @(Get-HubClaudeAccounts)
-    Assert-True (($accounts.Name -join ',') -eq ".claude,.claude-dev O'Brien,.claude-work O'Brien") 'Account folders were not discovered.'
+    Assert-True (($accounts.Name -join ',') -eq ".claude,.claude-2,.claude-3") 'Account folders were not discovered.'
     Assert-True ($accounts[0].Shared -and -not $accounts[1].Shared -and $accounts[1].Dir -eq $devWin) 'Account directories are wrong.'
     Assert-True ($accounts[1].Email -eq 'dev@example.com' -and -not $accounts[2].Email) 'Login emails were not read.'
     Assert-True ($accounts[1].Color -eq (Get-HubClaudeAccountColor 'DEV@example.com') -and $accounts[1].Color -match '^#[0-9A-F]{6}$') 'Account color does not follow its email.'
@@ -82,7 +82,7 @@ try {
     Assert-True ((Get-HubClaudeActiveAccount).Name -eq $accounts[2].Name) 'Active account was not saved.'
     Assert-True ((Get-HubClaudeActiveAccount @($accounts[0..1])).Shared) 'Vanished account was still active.'
     $accounts = @(Get-HubClaudeAccounts -New)
-    Assert-True ($accounts.Count -eq 4 -and $accounts[3].Name -eq '.claude-2' -and $accounts[2].Name -eq ".claude-work O'Brien") 'New account was not appended.'
+    Assert-True ($accounts.Count -eq 4 -and $accounts[3].Name -eq '.claude-4') 'New account was not appended.'
 
     $claudeAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-claude.ps1'), [ref]$null, [ref]$null)
     # Run the generated scanner/backup against the shared history, including prompt history.

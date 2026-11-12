@@ -393,7 +393,7 @@ class LinkAccountTests(unittest.TestCase):
         (self.shared / 'projects' / 'p').mkdir(parents=True)
         (self.shared / 'projects' / 'p' / 'shared.jsonl').write_text('shared')
         (self.shared / 'settings.json').write_text('shared settings')
-        self.account = self.root / ".claude-work O'Brien"
+        self.account = self.root / '.claude-3'
         (self.account / 'projects' / 'old').mkdir(parents=True)
         (self.account / 'projects' / 'old' / 'own.jsonl').write_text('own')
         (self.account / 'settings.json').write_text('own settings')
@@ -425,10 +425,12 @@ class LinkAccountTests(unittest.TestCase):
 
     def test_lists_accounts_with_emails_and_appends_new_numbered_ones(self):
         (self.root / '.claude-10').mkdir()
+        (self.root / '.claude-notes').mkdir()  # not numbered, so not an account
         (self.root / '.claude.json').write_text('{"oauthAccount": {"emailAddress": "first@example.com"}}')
         self.link('new')
-        self.assertEqual([[str(self.shared), 'first@example.com', ''], [str(self.account), 'work@example.com', 'u-work'],
-                          [str(self.root / '.claude-2'), '', ''], [str(self.root / '.claude-10'), '', '']], self.accounts)
+        self.assertEqual([[str(self.shared), 'first@example.com', ''], [str(self.root / '.claude-2'), '', ''],
+                          [str(self.account), 'work@example.com', 'u-work'], [str(self.root / '.claude-10'), '', '']], self.accounts)
+        self.assertFalse((self.root / '.claude-notes' / 'projects').exists())
         self.assertTrue((self.root / '.claude-2' / 'projects').is_symlink())
 
     def test_account_with_live_session_is_left_alone(self):
