@@ -289,12 +289,12 @@ $clickBinds = (@"
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
 $expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-a', 'alt-h', 'alt-s') -join ','
 # Rewritten before every pick so the prompt names the active account, in its tab color.
-# No $script:account means the new-account stop, which will take the next color.
+# No $script:account means the new-account stop, which has no login to color by yet.
 function Write-FzfScript {
     $label = if (-not $script:account) { 'NEW account' }
              elseif ($script:account.Email) { $script:account.Email -replace "'", '' }   # the prompt is single-quoted
              else { "$($script:account.Name.TrimStart('.')) (not logged in)" }
-    $color = if ($script:account) { $script:account.Color } else { Get-HubClaudeAccountColor $claudeAccounts.Count }
+    $color = if ($script:account) { $script:account.Color } else { '#9A9A9A' }
     $headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), 'alt-a: next account', 'alt-h: hide', 'alt-s: show', 'alt-p: preview', 'esc: reload') -join ' | '
     $fzfSh = @"
 #!/bin/bash
