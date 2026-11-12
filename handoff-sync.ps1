@@ -168,7 +168,7 @@ $clickBinds
         $label = (Get-Culture).TextInfo.ToTitleCase($hubTool)
         if ($hubTool -eq 'opencode') { $label = 'OpenCode' }
         if (-not $title) { $title = 'untitled' }
-        $title = $title -replace '[\r\n\]]', ' '
+        $title = $title -replace '[\r\n\]"]', ' '   # '"' would break native argument passing to wt.exe
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }
         # Claude opens in the active account; non-Claude targets ignore the config value.
         $account = if ($tool -eq 'claude') { Get-HubClaudeActiveAccount }

@@ -53,9 +53,13 @@
 # Usage: run under Windows PowerShell, e.g. a shortcut with target:
 #   powershell.exe -NoExit -ExecutionPolicy Bypass -File "C:\path\to\recent-opencode.ps1"
 
+param([switch]$Run)
+# The outer invocation is only this loop. Esc makes the picker exit with 75 and it is rerun in a
+# fresh scope of the same process, so reloads neither stack processes nor read stale variables.
+if (-not $Run) { do { & $PSCommandPath -Run @args } while ($LASTEXITCODE -eq 75); exit $LASTEXITCODE }
+
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
-$script:recentScriptArgs = @($args)
 
 # File.ReadLines refuses files another process holds open for writing, which native agents
 # do with their live transcripts. Stream lines with read/write sharing instead.
@@ -105,6 +109,9 @@ function ConvertFrom-WslPath($path) {
 # wrapper, and click-state files when the hub shortcut is opened more than once.
 $tmpWin  = Join-Path $env:TEMP ("recent-opencode-{0}" -f $PID)
 New-Item -ItemType Directory -Path $tmpWin -Force | Out-Null
+# Nothing runs when a tab is closed, so each launch removes the folders of pickers that are gone.
+Get-ChildItem $env:TEMP -Directory | Where-Object { $_.Name -match '^recent-opencode-(\d+)$' -and -not (Get-Process -Id $Matches[1] -ErrorAction SilentlyContinue) } |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 $tmpWsl  = ConvertTo-WslPath $tmpWin
 
 if ($backend -eq 'wsl') {
@@ -189,6 +196,8 @@ $wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW }
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
 # $color, when given, is the tab color: Claude tabs carry their account's.
 function Open-WtTab($title, $cwd, $command, $color) {
+    # Windows PowerShell 5 passes embedded double quotes to wt.exe unescaped, merging arguments.
+    $title = $title -replace '"', "'"
     $colorArgs = @(if ($color) { '--tabColor', $color })
     if ($backend -eq 'wsl') {
         & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs `
@@ -455,6 +464,8 @@ $backupSh = @"
 # `$1 = backup dir (Linux path), `$2 = opencode.db (Linux path), `$3 = Python wrapper.
 dir="`$1"; db="`$2"; py="`$3"
 interval=`$(( $backupEvery * 3600 ))
+# Click-state files of pickers long gone; a live picker rewrites its own on every focus change.
+find /tmp -maxdepth 1 -name 'recent-opencode-*-click.state' -mtime +7 -delete 2>/dev/null
 mkdir -p "`$dir" 2>/dev/null || exit 0
 
 newest=`$(ls -1 "`$dir"/opencode-history-*.tar.gz 2>/dev/null | sort | tail -1)
@@ -621,14 +632,10 @@ $newTargets = @($(if ($codexEnabled) { 'alt-x: codex' }), $(if ($claudeEnabled) 
 $newRow = if ($newTargets) { "+ New session (choose folder)...  [enter: opencode | $newTargets]`t__NEW__`t`t" } else { "+ New session (choose folder)...  [enter: opencode]`t__NEW__`t`t" }
 
 function Restart-Script {
-    $scriptPath = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
-    if (-not $scriptPath) { Write-Host "Cannot reload: script path is unknown"; Start-Sleep -Milliseconds 900; return }
     Write-Host "Reloading script..."
     # Re-detect CLIs so a tool installed since the hub launched appears.
     $env:AGENT_HUB_AVAILABLE_TOOLS = $null
-    $reloadArgs = @($script:recentScriptArgs)
-    & powershell.exe -NoExit -ExecutionPolicy Bypass -File $scriptPath @reloadArgs
-    exit
+    exit 75   # the loop at the top of this script reruns it
 }
 function Update-List {
     Write-Host "Scanning sessions..." -NoNewline
