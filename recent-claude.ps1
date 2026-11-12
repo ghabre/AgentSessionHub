@@ -535,9 +535,9 @@ function Show-HiddenSessions {
 }
 
 function Get-Sessions($visibility = 'visible') {
-    # Claude keeps a session's thinking history only for the account that owns it, so with
-    # several accounts each row names the accounts it ran under (the email's local part),
-    # oldest to most recent, to resume it where it left off.
+    # Resuming a session under another account can limit reuse of its thinking history, so
+    # with several accounts each row names the accounts it ran under (the email's local
+    # part), oldest to most recent, to resume it where it left off.
     $ownerLabels = @{}
     if ($claudeAccounts.Count -gt 1) { $claudeAccounts | Where-Object { $_.Uuid } | ForEach-Object { $ownerLabels[$_.Uuid] = ($_.Email -split '@')[0] } }
     $hiddenIds = Get-HiddenSessionIds
