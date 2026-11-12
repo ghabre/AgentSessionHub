@@ -460,7 +460,7 @@ $relocatedPattern = '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"'
 
 # Parsed-transcript cache: full read of every .jsonl over \\wsl$ costs ~10s,
 # so keep {cwd,titles} per file and only re-parse when the mtime changes.
-$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v8.json'
+$cacheFile = Join-Path $env:TEMP 'recent-claude-cache-v9.json'
 $cache = @{}
 if (Test-Path $cacheFile) {
     try {
@@ -536,7 +536,8 @@ function Show-HiddenSessions {
 
 function Get-Sessions($visibility = 'visible') {
     # Claude keeps a session's thinking history only for the account that owns it, so with
-    # several accounts each row names its owner (the email's local part) to resume it there.
+    # several accounts each row names the accounts it ran under (the email's local part),
+    # oldest to most recent, to resume it where it left off.
     $ownerLabels = @{}
     if ($claudeAccounts.Count -gt 1) { $claudeAccounts | Where-Object { $_.Uuid } | ForEach-Object { $ownerLabels[$_.Uuid] = ($_.Email -split '@')[0] } }
     $hiddenIds = Get-HiddenSessionIds
@@ -574,10 +575,11 @@ function Get-Sessions($visibility = 'visible') {
             $mtime = $epoch
             $c = $cache[$winPath]
             if ($c -and "$($c.mtime)" -eq $mtime) {
-                $cwd = $c.cwd; $fallback = $c.fallback; $continuedIn = $c.continuedIn; $owner = $c.owner
+                $cwd = $c.cwd; $fallback = $c.fallback; $continuedIn = $c.continuedIn; $owners = @($c.owners)
                 $customTitle = $c.customTitle; $aiTitle = $c.aiTitle
             } else {
-                $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continuedIn = $null; $owner = $null
+                $cwd = $null; $fallback = $null; $customTitle = $null; $aiTitle = $null; $continuedIn = $null
+                $owners = New-Object System.Collections.Generic.List[string]
                 $transitionSource = $null; $transitionTitle = $null
                 foreach ($line in [SharedFile]::ReadLines($winPath)) {
                     if ($line -match $relocatedPattern) { $cwd = $Matches[1] }
@@ -585,7 +587,10 @@ function Get-Sessions($visibility = 'visible') {
                     if ($line -match '"customTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $customTitle = $Matches[1] }
                     elseif ($line -match '"aiTitle"\s*:\s*"((?:[^"\\]|\\.)+)"') { $aiTitle = $Matches[1] }
                     elseif ($line -match '^\{"type":"continued-in".*"continuedInSessionId":"([^"]+)"') { $continuedIn = $Matches[1] }
-                    elseif ($line -match '^\{"type":"session-owner","accountUuid":"([^"]+)"') { $owner = $Matches[1] }
+                    # The owner record, or the account an owner-mismatch resume ran under; keep each account's latest use.
+                    elseif ($line -match '^\{"type":"(?:session-owner|history-suppression)".*?AccountUuid":"([^"]+)"') {
+                        [void]$owners.Remove($Matches[1]); $owners.Add($Matches[1])
+                    }
                     if (-not $fallback -and $line -match '"summary"\s*:\s*"([^"]+)"') { $fallback = $Matches[1] }
                     # Claude user content can be either a string or an array of text
                     # blocks. Parse JSON for the fallback instead of assuming a string.
@@ -604,7 +609,7 @@ function Get-Sessions($visibility = 'visible') {
                         $transitionSource = $Matches[1]; $transitionTitle = $Matches[2]
                     }
                 }
-                $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback; continuedIn = $continuedIn; owner = $owner
+                $cache[$winPath] = @{ mtime = $mtime; cwd = $cwd; fallback = $fallback; continuedIn = $continuedIn; owners = $owners
                                       customTitle = $customTitle; aiTitle = $aiTitle
                                       transitionSource = $transitionSource; transitionTitle = $transitionTitle }
             }
@@ -634,7 +639,8 @@ function Get-Sessions($visibility = 'visible') {
             $shortId = ($id -split '-')[-1]
             $status = $meta[$id].status
             $tag    = if ($status -and $status -ne 'idle') { "[$status] " } else { '' }
-            $ownerTag = if ($owner -and $ownerLabels[$owner]) { " @$($ownerLabels[$owner])" } else { '' }
+            $ownerNames = @($owners | ForEach-Object { $ownerLabels[$_] } | Where-Object { $_ })
+            $ownerTag = if ($ownerNames) { " @$($ownerNames -join '>')" } else { '' }
 
             # display <TAB> id <TAB> cwd <TAB> transcript (only col 1 is shown; --with-nth=1)
             "{0}{1} - {2} - {3} ago{9} [..-{4}]`t{5}`t{6}`t{7}`t{8}" -f $tag, $folder, $title, $age, $shortId, $id, $cwd, $winPath, $handoffTitle, $ownerTag
