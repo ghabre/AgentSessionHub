@@ -3,7 +3,7 @@
 #
 # Claude accounts are several logins sharing one session history. SHARED_DIR (~/.claude) is
 # the first account and keeps the real history and customizations. Every sibling
-# SHARED_DIR-* folder (~/.claude-work, ~/.claude-2, ...) is another account: it keeps only
+# SHARED_DIR-<n> folder (~/.claude-2, ~/.claude-3, ...) is another account: it keeps only
 # its own login (.credentials.json, .claude.json, org policy/remote settings, daemon state)
 # and symlinks everything in SHARED_ITEMS to SHARED_DIR, so any account can resume any
 # session. 'new' first creates the next free SHARED_DIR-<n>.
@@ -11,8 +11,7 @@
 # Never deletes data: an item already in the way is renamed NAME.pre-shared-STAMP. An
 # account with a live Claude session is skipped (its transcript is still being written).
 # Output lines: ACCOUNT:<dir><TAB><login email><TAB><account uuid> (both empty until logged
-# in; the uuid is what transcripts record as their owner), SHARED_DIR first,
-# then named folders, then numbered ones, so a new account never reorders the others.
+# in; the uuid is what transcripts record as their owner), SHARED_DIR first, then by number.
 # Also SET_ASIDE:<path>  LIVE:<account>  LINK_FAILED:<account>
 set -u
 shared=${1:?shared dir}
@@ -48,17 +47,15 @@ login() { sed -n '/"oauthAccount"/,/}/p' "$1" 2>/dev/null | grep -o "\"$2\": *\"
 account_line() { printf 'ACCOUNT:%s\t%s\t%s\n' "$1" "$(login "$2" emailAddress)" "$(login "$2" accountUuid)"; }
 account_line "$shared" "$shared.json"
 
-named=()
 numbers=()
 for account in "$shared"-*/; do
-    [ -d "$account" ] || continue
     suffix=${account#"$shared"-}
     suffix=${suffix%/}
-    case "$suffix" in *[!0-9]*) named+=("$shared-$suffix") ;; *) numbers+=("$suffix") ;; esac
+    case "$suffix" in ''|*[!0-9]*) ;; *) numbers+=("$suffix") ;; esac
 done
-for n in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -n); do named+=("$shared-$n"); done
 
-for account in ${named[@]+"${named[@]}"}; do
+for n in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -n); do
+    account="$shared-$n"
     account_line "$account" "$account/.claude.json"
     # Only an unlinked sessions/ dir can hold sessions missing from the shared history.
     if [ -d "$account/sessions" ] && [ ! -L "$account/sessions" ]; then

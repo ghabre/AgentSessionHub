@@ -50,7 +50,7 @@
 #   powershell.exe -NoExit -ExecutionPolicy Bypass -File "C:\path\to\recent-claude.ps1"
 
 # Claude accounts: one session history (~/.claude), several logins. ~/.claude is the first
-# account and every ~/.claude-* folder another, keeping only its login; claude-accounts.sh
+# account and every ~/.claude-<n> folder another, keeping only its login; claude-accounts.sh
 # links the rest of each to ~/.claude. Alt-A cycles the active account, named by its login
 # email in the prompt, and every launch, resume and handoff opens in it with the account's
 # tab color. The last Alt-A stop is a new account: the next Claude launch creates

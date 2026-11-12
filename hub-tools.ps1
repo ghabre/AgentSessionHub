@@ -39,7 +39,7 @@ function Show-HubMissingTools([string[]]$tools) {
 }
 
 # Claude accounts are logins sharing one session history: ~/.claude first, then every
-# ~/.claude-* folder (claude-accounts.sh lists them, links each to ~/.claude and, with -New,
+# ~/.claude-<n> folder (claude-accounts.sh lists them, links each to ~/.claude and, with -New,
 # creates the next numbered one). Needs the picker's Invoke-Bash, path converters and $bashHome.
 # Dir is the backend-native CLAUDE_CONFIG_DIR; Email and Uuid are empty until the account logs in.
 function Get-HubClaudeAccounts([switch]$New) {
