@@ -115,8 +115,9 @@ function Invoke-HubTransfer($tool, $items, $cwd) {
         $plan = Get-HubTransferPlan $request
         if ($plan.status -eq 'choose') {
             # Only real branches require a choice; one known destination resumes automatically.
+            # The planner lists them most recently modified first.
             $rows = @($plan.candidates | ForEach-Object {
-                $label = ("{0} - {1} [{2}]" -f $_.title, $_.cwd, $_.id) -replace '[\r\n\t]', ' '
+                $label = ("{0}  {1} - {2} [{3}]" -f $_.updated, $_.title, $_.cwd, $_.id) -replace '[\r\n\t]', ' '
                 "$label`t$($_.key)"
             }) + "+ start a separate branch`t__NEW__"
             [System.IO.File]::WriteAllLines($dirListWin, [string[]]$rows)

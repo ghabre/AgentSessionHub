@@ -171,6 +171,10 @@ class TransferTests(unittest.TestCase):
         choices = self.transfer([self.key('claude')], 'codex')
         self.assertEqual('choose', choices['status'])
         self.assertEqual(2, len(choices['candidates']))
+        os.utime(Path(self.request['codex_root']) / f'rollout-{IDS["codex"]}.jsonl', (4102444800, 4102444800))
+        newest_first = self.transfer([self.key('claude')], 'codex')['candidates']
+        self.assertEqual([IDS['codex'], other], [c['id'] for c in newest_first])
+        self.assertRegex(newest_first[0]['updated'], r'^2100-01-01 \d\d:\d\d$')
         selected = self.transfer([self.key('claude')], 'codex', target=self.key('codex', other))
         self.assertIsNone(selected['handoff'])
 
