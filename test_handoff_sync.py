@@ -381,7 +381,7 @@ class LinkAccountTests(unittest.TestCase):
         (self.account / 'projects' / 'old' / 'own.jsonl').write_text('own')
         (self.account / 'settings.json').write_text('own settings')
         (self.account / '.credentials.json').write_text('login')
-        (self.account / '.claude.json').write_text('{"oauthAccount": {"emailAddress": "work@example.com"}}')
+        (self.account / '.claude.json').write_text('{"userID": "x", "oauthAccount": {"accountUuid": "u-work", "emailAddress": "work@example.com"}}')
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -410,8 +410,8 @@ class LinkAccountTests(unittest.TestCase):
         (self.root / '.claude-10').mkdir()
         (self.root / '.claude.json').write_text('{"oauthAccount": {"emailAddress": "first@example.com"}}')
         self.link('new')
-        self.assertEqual([[str(self.shared), 'first@example.com'], [str(self.account), 'work@example.com'],
-                          [str(self.root / '.claude-2'), ''], [str(self.root / '.claude-10'), '']], self.accounts)
+        self.assertEqual([[str(self.shared), 'first@example.com', ''], [str(self.account), 'work@example.com', 'u-work'],
+                          [str(self.root / '.claude-2'), '', ''], [str(self.root / '.claude-10'), '', '']], self.accounts)
         self.assertTrue((self.root / '.claude-2' / 'projects').is_symlink())
 
     def test_account_with_live_session_is_left_alone(self):

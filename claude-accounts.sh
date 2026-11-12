@@ -10,7 +10,8 @@
 #
 # Never deletes data: an item already in the way is renamed NAME.pre-shared-STAMP. An
 # account with a live Claude session is skipped (its transcript is still being written).
-# Output lines: ACCOUNT:<dir><TAB><login email, empty until logged in>, SHARED_DIR first,
+# Output lines: ACCOUNT:<dir><TAB><login email><TAB><account uuid> (both empty until logged
+# in; the uuid is what transcripts record as their owner), SHARED_DIR first,
 # then named folders, then numbered ones, so a new account never reorders the others.
 # Also SET_ASIDE:<path>  LIVE:<account>  LINK_FAILED:<account>
 set -u
@@ -43,8 +44,9 @@ if [ "${2-}" = new ]; then
 fi
 
 # The first account's file sits beside its folder (~/.claude.json), the others' inside.
-email() { grep -o '"emailAddress": *"[^"]*"' "$1" 2>/dev/null | head -1 | cut -d'"' -f4; }
-printf 'ACCOUNT:%s\t%s\n' "$shared" "$(email "$shared.json")"
+login() { sed -n '/"oauthAccount"/,/}/p' "$1" 2>/dev/null | grep -o "\"$2\": *\"[^\"]*\"" | head -1 | cut -d'"' -f4; }
+account_line() { printf 'ACCOUNT:%s\t%s\t%s\n' "$1" "$(login "$2" emailAddress)" "$(login "$2" accountUuid)"; }
+account_line "$shared" "$shared.json"
 
 named=()
 numbers=()
@@ -57,7 +59,7 @@ done
 for n in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -n); do named+=("$shared-$n"); done
 
 for account in ${named[@]+"${named[@]}"}; do
-    printf 'ACCOUNT:%s\t%s\n' "$account" "$(email "$account/.claude.json")"
+    account_line "$account" "$account/.claude.json"
     # Only an unlinked sessions/ dir can hold sessions missing from the shared history.
     if [ -d "$account/sessions" ] && [ ! -L "$account/sessions" ]; then
         live=

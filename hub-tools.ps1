@@ -41,7 +41,7 @@ function Show-HubMissingTools([string[]]$tools) {
 # Claude accounts are logins sharing one session history: ~/.claude first, then every
 # ~/.claude-* folder (claude-accounts.sh lists them, links each to ~/.claude and, with -New,
 # creates the next numbered one). Needs the picker's Invoke-Bash, path converters and $bashHome.
-# Dir is the backend-native CLAUDE_CONFIG_DIR; Email is empty until the account logs in.
+# Dir is the backend-native CLAUDE_CONFIG_DIR; Email and Uuid are empty until the account logs in.
 function Get-HubClaudeAccounts([switch]$New) {
     $bashArgs = @((ConvertTo-WslPath (Join-Path $PSScriptRoot 'claude-accounts.sh')), "$bashHome/.claude") + @(if ($New) { 'new' })
     $accounts = @()
@@ -49,10 +49,10 @@ function Get-HubClaudeAccounts([switch]$New) {
         $kind, $value = "$line" -split ':', 2
         switch ($kind) {
             'ACCOUNT' {
-                $dir, $email = $value -split "`t", 2
+                $dir, $email, $uuid = $value -split "`t"
                 $accounts += [pscustomobject]@{
                     Name = ($dir -split '/')[-1]; Dir = $(if ($backend -eq 'windows') { ConvertFrom-WslPath $dir } else { $dir })
-                    Email = $email; Shared = -not $accounts.Count; Color = Get-HubClaudeAccountColor $accounts.Count
+                    Email = $email; Uuid = $uuid; Shared = -not $accounts.Count; Color = Get-HubClaudeAccountColor $accounts.Count
                 }
             }
             'SET_ASIDE'   { Write-Host "Kept aside (now shared from ~/.claude): $value" -ForegroundColor Yellow }
