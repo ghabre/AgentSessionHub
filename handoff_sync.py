@@ -300,7 +300,8 @@ def open_ledger(directory):
 
 
 def session_info(session):
-    return {'id': session.id, 'key': session.key, 'cwd': session.cwd, 'title': session.title or session.id}
+    return {'id': session.id, 'key': session.key, 'cwd': session.cwd, 'title': session.title or session.id,
+            'updated': time.strftime('%Y-%m-%d %H:%M', time.localtime(session.updated / 1e9))}
 
 
 def plan(request):
