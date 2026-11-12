@@ -74,7 +74,8 @@ try {
     Assert-True (($accounts.Name -join ',') -eq ".claude,.claude-dev O'Brien,.claude-work O'Brien") 'Account folders were not discovered.'
     Assert-True ($accounts[0].Shared -and -not $accounts[1].Shared -and $accounts[1].Dir -eq $devWin) 'Account directories are wrong.'
     Assert-True ($accounts[1].Email -eq 'dev@example.com' -and -not $accounts[2].Email) 'Login emails were not read.'
-    Assert-True (@($accounts.Color | Select-Object -Unique).Count -eq 3) 'Accounts share a tab color.'
+    Assert-True ($accounts[1].Color -eq (Get-HubClaudeAccountColor 'DEV@example.com') -and $accounts[1].Color -match '^#[0-9A-F]{6}$') 'Account color does not follow its email.'
+    Assert-True ($accounts[0].Color -ne $accounts[1].Color) 'Different accounts share a tab color.'
     # The active account is saved state; a missing or vanished account falls back to the first.
     Assert-True ((Get-HubClaudeActiveAccount).Shared) 'Default account is not the first.'
     Set-HubClaudeActiveAccount $accounts[2]

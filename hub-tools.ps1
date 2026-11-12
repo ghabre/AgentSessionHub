@@ -50,9 +50,11 @@ function Get-HubClaudeAccounts([switch]$New) {
         switch ($kind) {
             'ACCOUNT' {
                 $dir, $email, $uuid = $value -split "`t"
+                $name = ($dir -split '/')[-1]
                 $accounts += [pscustomobject]@{
-                    Name = ($dir -split '/')[-1]; Dir = $(if ($backend -eq 'windows') { ConvertFrom-WslPath $dir } else { $dir })
-                    Email = $email; Uuid = $uuid; Shared = -not $accounts.Count; Color = Get-HubClaudeAccountColor $accounts.Count
+                    Name = $name; Dir = $(if ($backend -eq 'windows') { ConvertFrom-WslPath $dir } else { $dir })
+                    Email = $email; Uuid = $uuid; Shared = -not $accounts.Count
+                    Color = Get-HubClaudeAccountColor $(if ($email) { $email } else { $name })
                 }
             }
             'SET_ASIDE'   { Write-Host "Kept aside (now shared from ~/.claude): $value" -ForegroundColor Yellow }
@@ -63,10 +65,21 @@ function Get-HubClaudeAccounts([switch]$New) {
     $accounts
 }
 
-# Tab and prompt color by account position; Claude Code may retitle a tab but its color stays.
-function Get-HubClaudeAccountColor($index) {
-    $colors = '#D97757', '#3FB950', '#2F81F7', '#A371F7', '#D29922', '#DB61A2'
-    $colors[$index % $colors.Count]
+# Tab and prompt color from the login email (the folder name until logged in): the hue is a
+# hash of the key, so an account keeps its color whatever the order accounts were added in.
+# Saturation and brightness are fixed and calm. Claude Code may retitle a tab; its color stays.
+function Get-HubClaudeAccountColor([string]$key) {
+    $hash = [Security.Cryptography.MD5]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($key.ToLowerInvariant()))
+    $hue = [BitConverter]::ToUInt32($hash, 0) % 360
+    $saturation = 0.45; $value = 0.78
+    # HSV to RGB
+    $chroma = $value * $saturation
+    $x = $chroma * (1 - [Math]::Abs(($hue / 60) % 2 - 1))
+    $r, $g, $b = switch ([Math]::Floor($hue / 60)) {
+        0 { $chroma, $x, 0 }  1 { $x, $chroma, 0 }  2 { 0, $chroma, $x }
+        3 { 0, $x, $chroma }  4 { $x, 0, $chroma }  5 { $chroma, 0, $x }
+    }
+    '#{0:X2}{1:X2}{2:X2}' -f ($r, $g, $b | ForEach-Object { [int][Math]::Round(($_ + $value - $chroma) * 255) })
 }
 
 # The active account is shared by every picker: Alt-A in the Claude picker sets it, and
