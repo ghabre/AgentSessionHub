@@ -217,12 +217,15 @@ def preview(tool, root, sid):
 
 
 def read_sessions(request, db):
+    """Read every native session; db caches parsed transcripts by path and stat signature."""
     sessions = {}
+    seen = set()
     for tool in ('codex', 'claude'):
         root = Path(native_path(request[tool + '_root']))
         for path in sorted(root.rglob('*.jsonl')):
             if 'subagents' in path.parts:
                 continue
+            seen.add(str(path))
             stat = path.stat()
             signature = f'4:{stat.st_mtime_ns}:{stat.st_size}'
             cached = db.execute('SELECT signature, data FROM cache WHERE path = ?', (str(path),)).fetchone()
@@ -242,6 +245,8 @@ def read_sessions(request, db):
                 sessions[session.key] = session
             elif old is None or session.updated > old.updated:
                 sessions[session.key] = session
+    db.executemany('DELETE FROM cache WHERE path = ?',
+                   [(path,) for path, in db.execute('SELECT path FROM cache').fetchall() if path not in seen])
     path = Path(native_path(request['opencode_db']))
     if path.is_file():
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as source:
@@ -294,8 +299,24 @@ def open_ledger(directory):
     db.execute('CREATE TABLE IF NOT EXISTS transfers (id TEXT PRIMARY KEY, sources TEXT NOT NULL, tool TEXT NOT NULL, target TEXT, events TEXT NOT NULL, path TEXT NOT NULL, created REAL NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS receipts (transfer_id TEXT NOT NULL, session TEXT NOT NULL, PRIMARY KEY (transfer_id, session))')
     db.execute('CREATE TABLE IF NOT EXISTS snapshots (session TEXT PRIMARY KEY, events TEXT NOT NULL)')
+    db.commit()
+    return db
+
+
+def open_cache(path, ledger):
+    """The parse cache is large and disposable, so it lives apart from the ledger, on a local disk."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=30)
     db.execute('CREATE TABLE IF NOT EXISTS cache (path TEXT PRIMARY KEY, signature TEXT NOT NULL, data TEXT NOT NULL)')
     db.commit()
+    # Ledgers written before the split still hold the cache: move it once and shrink the ledger.
+    if ledger.execute("SELECT 1 FROM sqlite_master WHERE name = 'cache'").fetchone():
+        ledger.execute('ATTACH ? AS split', (str(path),))
+        ledger.execute('INSERT OR IGNORE INTO split.cache SELECT * FROM main.cache')
+        ledger.execute('DROP TABLE main.cache')
+        ledger.commit()
+        ledger.execute('DETACH split')
+        ledger.execute('VACUUM')
     return db
 
 
@@ -307,11 +328,12 @@ def session_info(session):
 def plan(request):
     directory = Path(native_path(request['state_dir']))
     migrate_state(directory, request.get('legacy_state_dir'))
-    with closing(open_ledger(directory)) as db, db:
+    cache_path = Path(native_path(request.get('cache_db') or str(directory / 'cache.db')))
+    with closing(open_ledger(directory)) as db, closing(open_cache(cache_path, db)) as cache, db, cache:
         # Serialize discovery and planning across picker processes. A second launch
         # sees the first pending transfer instead of allocating a competing session.
         db.execute('BEGIN IMMEDIATE')
-        sessions = read_sessions(request, db)
+        sessions = read_sessions(request, cache)
         transfers = {row[0]: {'sources': json.loads(row[1]), 'tool': row[2], 'target': row[3],
                               'events': json.loads(row[4]), 'path': row[5], 'created': row[6]}
                      for row in db.execute('SELECT * FROM transfers ORDER BY rowid')}
@@ -492,6 +514,9 @@ def main():
         request.setdefault('legacy_state_dir', request['state_dir'])
         scope = Path(native_path(request['state_dir'])).name
     request['state_dir'] = str(Path(__file__).resolve().parent / '.history' / scope)
+    # The ledger sits beside this script, which under WSL is a slow Windows mount.
+    local = os.environ.get('LOCALAPPDATA') or os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
+    request['cache_db'] = str(Path(local) / 'AgentSessionHub' / (scope + '-cache.db'))
     try:
         result = plan(request)
     except (OSError, ValueError, sqlite3.Error) as error:

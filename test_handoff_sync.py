@@ -209,6 +209,19 @@ class TransferTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'older handoff file is missing'):
             self.transfer([self.key('codex')], 'opencode')
 
+    def test_parse_cache_moves_out_of_an_older_ledger(self):
+        self.append('claude', 'task')
+        state = Path(self.request['state_dir'])
+        state.mkdir()
+        with closing(sqlite3.connect(state / 'sync.db')) as db, db:
+            db.execute('CREATE TABLE cache (path TEXT PRIMARY KEY, signature TEXT NOT NULL, data TEXT NOT NULL)')
+            db.execute("INSERT INTO cache VALUES ('gone.jsonl', 'old', '{}')")
+        self.assertEqual('preview', self.transfer([self.key('claude')], 'codex', preview=True)['status'])
+        with closing(sqlite3.connect(state / 'sync.db')) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name = 'cache'").fetchone())
+        with closing(sqlite3.connect(state / 'cache.db')) as db:
+            self.assertEqual(1, db.execute('SELECT count(*) FROM cache').fetchone()[0])  # the stale row is pruned
+
     def test_preview_cancel_does_not_reserve_a_transfer(self):
         self.append('claude', 'task')
         preview = self.transfer([self.key('claude')], 'codex', preview=True)
