@@ -9,7 +9,7 @@ After every completed repository change, automatically create a Git commit with 
 This repository contains Windows launchers and PowerShell utilities for Codex, Claude Code and OpenCode sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see each picker's header).
 
 - `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
-- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. `AGENT_HUB_TOOLS` is a comma-separated list drawn from `codex,claude,opencode` and defaults to all three. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
+- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. `agent-hub.config` turns each of `codex`, `claude` and `opencode` on or off; `AGENT_HUB_TOOLS`, a comma-separated list of them, overrides it. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
 
@@ -48,7 +48,7 @@ Use four-space indentation in PowerShell blocks. Follow existing PowerShell conv
 
 ## Testing Guidelines
 
-No automated test suite or coverage target is present. Parser-check every modified `.ps1`, then manually exercise the affected picker action in all three session pickers: new session, resume, Alt-X/Alt-C/Alt-O handoff, preview pane (Alt-P), multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
+Run the checks in the README's Development section and parser-check every modified `.ps1`, then manually exercise the affected picker action in all three session pickers: new session, resume, Alt-T destination menu (handoff, and Claude account rows), preview pane (Alt-P), multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
 
 ## Commit & Pull Request Guidelines
 

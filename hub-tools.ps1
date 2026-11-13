@@ -103,7 +103,7 @@ function Get-HubClaudeAccountColor([string]$key) {
     '#{0:X2}{1:X2}{2:X2}' -f ($r, $g, $b | ForEach-Object { [int][Math]::Round(($_ + $value - $chroma) * 255) })
 }
 
-# The active account is shared by every picker: Alt-A in the Claude picker sets it, and
+# The active account is shared by every picker: Alt-A in the Claude picker or an Alt-T account row sets it, and
 # every Claude launch or handoff uses it. A missing or vanished account falls back to the first.
 function Get-HubClaudeAccountFile { Join-Path (Join-Path $env:LOCALAPPDATA 'AgentSessionHub') 'claude-account.txt' }
 
@@ -121,7 +121,7 @@ function Set-HubClaudeActiveAccount($account) {
 }
 
 function Get-HubTransferTargets([string]$currentTool, [string[]]$enabledTools, $accounts, $activeAccount) {
-    [pscustomobject]@{ Label = 'Open'; Tool = $currentTool; Account = $activeAccount }
+    [pscustomobject]@{ Label = 'Open'; Tool = $currentTool }   # same as Enter: no account choice
     foreach ($tool in @($currentTool) + @($enabledTools | Where-Object { $_ -ne $currentTool })) {
         if ($tool -eq 'claude') {
             $loggedIn = @($accounts | Where-Object { $_.Email -or $_.Uuid })
