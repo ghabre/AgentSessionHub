@@ -9,7 +9,7 @@ After every completed repository change, automatically create a Git commit with 
 This repository contains Windows launchers and PowerShell utilities for Codex, Claude Code and OpenCode sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see each picker's header).
 
 - `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
-- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. The per-machine, gitignored `agent-hub.config`, created all-on at first launch, turns each of `codex`, `claude` and `opencode` on or off; `AGENT_HUB_TOOLS`, a comma-separated list of them, overrides it. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
+- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. The per-machine, gitignored `agent-hub.config`, created all-on at first launch, turns each of `codex`, `claude` and `opencode` on or off. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
 
@@ -44,7 +44,7 @@ An empty result means parsing succeeded. Functional testing requires Windows, WS
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation in PowerShell blocks. Follow existing PowerShell conventions: `PascalCase` for functions and approved verbs (for example, `ConvertTo-WslPath`), and descriptive `camelCase` for local variables. Keep environment overrides uppercase, such as `CODEX_BACKUP_DIR`, `OPENCODE_BACKUP_DIR`, and `AGENT_HUB_TOOLS`. Preserve `$ErrorActionPreference = 'Stop'`, UTF-8 handling, and LF normalization for generated shell scripts. Comment cross-boundary quoting and Windows/WSL path conversions, which are easy to break.
+Use four-space indentation in PowerShell blocks. Follow existing PowerShell conventions: `PascalCase` for functions and approved verbs (for example, `ConvertTo-WslPath`), and descriptive `camelCase` for local variables. Keep environment overrides uppercase, such as `CODEX_BACKUP_DIR`, `OPENCODE_BACKUP_DIR`, and `AGENT_HUB_BACKEND`. Preserve `$ErrorActionPreference = 'Stop'`, UTF-8 handling, and LF normalization for generated shell scripts. Comment cross-boundary quoting and Windows/WSL path conversions, which are easy to break.
 
 ## Testing Guidelines
 

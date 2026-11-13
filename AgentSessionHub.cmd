@@ -1,6 +1,6 @@
 @echo off
 rem Agent Session Hub: opens enabled session pickers as tabs in one Windows Terminal window.
-rem Enable CLIs in agent-hub.config; AGENT_HUB_TOOLS overrides it with a comma-separated list. Alt-T chooses a tool/account; Alt-A cycles Claude accounts.
+rem Enable CLIs in agent-hub.config. Alt-T chooses a tool/account; Alt-A cycles Claude accounts.
 set "terminal=wt.exe"
 where wt.exe >nul 2>&1
 if not errorlevel 1 goto launch
