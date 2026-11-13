@@ -11,9 +11,9 @@
 # The top row ("+ New session...") starts a fresh conversation: it opens a folder picker
 # listing the project root itself followed by its immediate subfolders (default C:\G\code,
 # override with $env:CLAUDE_NEW_ROOT or $env:AGENT_HUB_NEW_ROOT), and launches a new session
-# in the folder you pick -- `claude` on enter/click, `codex` on Alt-X, or `opencode` on Alt-O.
+# in the folder you pick -- `claude` on enter/click, another tool through Alt-T.
 #
-# Transfer hotkeys resume a unique linked destination automatically, importing only
+# Transfers resume a unique linked destination automatically, importing only
 # unseen messages and tool notes. Multiple branches require a destination choice.
 # A repeated transfer with no new material resumes without adding a prompt.
 # Tab marks multiple sessions; Enter or a transfer key continues their combined
@@ -40,7 +40,7 @@
 #     mis-parses Windows Terminal mouse input). apt: `sudo apt install fzf`, or grab a
 #     release binary into ~/.local/bin. It's found via the WSL login-shell PATH.
 #   - `claude` reachable from the WSL login shell (bash -lic).
-#   - `codex` / `opencode` likewise, but only if you use the Alt-X / Alt-O handoff.
+#   - `codex` / `opencode` likewise, but only if you use the Alt-T menu.
 #   - Python 3.8+ with SQLite for conversation handoffs and combining.
 #
 # Auto-detected (no per-machine editing needed): the default WSL distro and the fzf path.
@@ -85,13 +85,7 @@ if ($backend -notin @('wsl', 'windows')) { throw "AGENT_HUB_BACKEND must be 'wsl
 . (Join-Path $PSScriptRoot 'hub-tools.ps1')
 $availableTools = @(Get-HubAvailableTools)
 
-$enabledTools = @(if ($env:AGENT_HUB_TOOLS) {
-    $env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-} else {
-    'codex', 'claude', 'opencode'
-}) | Where-Object { $_ -in $availableTools }
-$codexEnabled = 'codex' -in $enabledTools
-$opencodeEnabled = 'opencode' -in $enabledTools
+$enabledTools = @(Get-HubRequestedTools | Where-Object { $_ -in $availableTools })
 
 # C:\dir\sub -> /mnt/c/dir/sub in WSL, /c/dir/sub in Git Bash. One definition for every
 # Windows path this script hands to the helper scripts (temp dir, new-session root, backup dir).
@@ -287,7 +281,7 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in claude, hand the session off to codex/opencode, copy it, or hide it from this picker.
-$expectKeys = @($(if ($codexEnabled) { 'alt-x' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-a', 'alt-h', 'alt-s') -join ','
+$expectKeys = 'alt-t,alt-a,alt-h,alt-s'
 # Rewritten before every pick so the prompt names the active account, in its tab color.
 # No $script:account means the new-account stop, which has no login to color by yet.
 function Write-FzfScript {
@@ -295,7 +289,7 @@ function Write-FzfScript {
              elseif ($script:account.Email) { $script:account.Email -replace "'", '' }   # the prompt is single-quoted
              else { "$($script:account.Name.TrimStart('.')) (not logged in)" }
     $color = if ($script:account) { $script:account.Color } else { '#9A9A9A' }
-    $headerActions = @('enter: open', 'tab: mark', $(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), 'alt-a: next account', 'alt-h: hide', 'alt-s: show', 'alt-p: preview', 'esc: reload') -join ' | '
+    $headerActions = @('enter: open', 'tab: mark', 'alt-t: open with', 'alt-a: next account', 'alt-h: hide', 'alt-s: show', 'alt-p: preview', 'esc: reload') -join ' | '
     $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -664,9 +658,8 @@ function Get-Sessions($visibility = 'visible') {
 # screen (no rescan, no reshuffle). Esc reloads the whole script so code changes are picked up; close the
 # window to quit. Scan up front, then restart the script when Esc asks for it.
 # Synthetic first row: picking it (id __NEW__) triggers the folder picker below --
-# with claude on enter/click, or a transfer target on its hotkey, same as the session rows.
-$newTargets = @($(if ($codexEnabled) { 'alt-x: codex' }), $(if ($opencodeEnabled) { 'alt-o: opencode' })) -join ' | '
-$newRow = if ($newTargets) { "+ New session (choose folder)...  [enter: claude | $newTargets]`t__NEW__`t`t" } else { "+ New session (choose folder)...  [enter: claude]`t__NEW__`t`t" }
+# with claude on enter/click, or a destination through Alt-T, same as the session rows.
+$newRow = "+ New session (choose folder)...  [enter: claude | alt-t: open with]`t__NEW__`t`t"
 
 function Restart-Script {
     Write-Host "Reloading script..."
@@ -787,7 +780,7 @@ while ($true) {
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     Invoke-Bash $fzfShWsl $listWsl $pickWsl
 
-    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-h', or 'alt-s') and
+    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-t', 'alt-h', or 'alt-s') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
@@ -818,7 +811,16 @@ while ($true) {
     # bash -lic loads the login profile so PATH includes claude.
     # For the keys that launch something, the pressed key chooses the tool once, here;
     # everything below just uses $tool.
-    $tool = if ($key -eq 'alt-x') { 'codex' } elseif ($key -eq 'alt-o') { 'opencode' } else { 'claude' }
+    $tool = 'claude'
+    if ($key -eq 'alt-t') {
+        $target = Select-HubTransferTarget 'claude' $enabledTools
+        if (-not $target) { continue }
+        $tool = $target.Tool
+        if ($tool -eq 'claude') {
+            $script:account = $target.Account
+            $newAccount = $false
+        }
+    }
     if ($newAccount -and $tool -eq 'claude') {
         $known = @($claudeAccounts.Name)
         $claudeAccounts = @(Get-HubClaudeAccounts -New)

@@ -1,8 +1,10 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hub-tools.ps1')
-$requested = if ($env:AGENT_HUB_TOOLS) { @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() }) } else { @('codex', 'claude', 'opencode') }
 $env:AGENT_HUB_AVAILABLE_TOOLS = $null
-try { $available = @(Get-HubAvailableTools) } catch {
+try {
+    $requested = @(Get-HubRequestedTools)
+    $available = @(Get-HubAvailableTools)
+} catch {
     # Launched from a shortcut, so keep the failure readable.
     Write-Host $_.Exception.Message
     [void](Read-Host 'Press Enter to close this launcher')
@@ -19,6 +21,7 @@ foreach ($tool in @('codex', 'claude', 'opencode')) {
     $tabs += @('new-tab', '--title', $tool, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$tool.ps1"))
 }
 if ($tabs.Count) { & $args[0] -w $env:AGENT_SESSION_HUB_WINDOW @tabs }
+if (-not $tabs.Count) { Write-Host 'No enabled CLIs are available. Check agent-hub.config and CLI installation.' }
 if ($showReminder) {
     # Keep the weekly installation reminder visible when launched from a shortcut.
     Write-Host 'Press Enter to close this launcher.'

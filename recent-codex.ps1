@@ -11,9 +11,9 @@
 # The top row ("+ New session...") starts a fresh conversation: it opens a folder picker
 # listing the project root itself followed by its immediate subfolders (default C:\G\code,
 # override with $env:CODEX_NEW_ROOT or $env:AGENT_HUB_NEW_ROOT), and launches a new session
-# in the folder you pick -- `codex` on enter/click, `claude` on Alt-C, or `opencode` on Alt-O.
+# in the folder you pick -- `codex` on enter/click, another tool through Alt-T.
 #
-# Transfer hotkeys resume a unique linked destination automatically, importing only
+# Transfers resume a unique linked destination automatically, importing only
 # unseen messages and tool notes. Multiple branches require a destination choice.
 # A repeated transfer with no new material resumes without adding a prompt.
 # Tab marks multiple sessions; Enter or a transfer key continues their combined
@@ -41,7 +41,7 @@
 #     mis-parses Windows Terminal mouse input). apt: `sudo apt install fzf`, or grab a
 #     release binary into ~/.local/bin. It's found via the WSL login-shell PATH.
 #   - `codex` reachable from the WSL login shell (bash -lic).
-#   - `claude` / `opencode` likewise, but only if you use the Alt-C / Alt-O handoff.
+#   - `claude` / `opencode` likewise, but only if you use the Alt-T menu.
 #   - Python 3.8+ with SQLite for conversation handoffs and combining.
 #
 # Auto-detected (no per-machine editing needed): the default WSL distro and the fzf path.
@@ -79,13 +79,7 @@ if ($backend -notin @('wsl', 'windows')) { throw "AGENT_HUB_BACKEND must be 'wsl
 . (Join-Path $PSScriptRoot 'hub-tools.ps1')
 $availableTools = @(Get-HubAvailableTools)
 
-$enabledTools = @(if ($env:AGENT_HUB_TOOLS) {
-    $env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-} else {
-    'codex', 'claude', 'opencode'
-}) | Where-Object { $_ -in $availableTools }
-$claudeEnabled = 'claude' -in $enabledTools   # alt-c opens Claude in the active account (Alt-A in the Claude picker)
-$opencodeEnabled = 'opencode' -in $enabledTools
+$enabledTools = @(Get-HubRequestedTools | Where-Object { $_ -in $availableTools })
 
 # C:\dir\sub -> /mnt/c/dir/sub in WSL, /c/dir/sub in Git Bash. One definition for every
 # Windows path this script hands to the helper scripts (temp dir, new-session root, backup dir).
@@ -284,8 +278,8 @@ $clickBinds = (@"
 # --expect makes fzf print the pressed key as the FIRST line of the pick file (an empty
 # first line for a plain Enter/click accept), so one picker can mean several things:
 # open in codex, hand the session off to claude/opencode, copy it, or hide it from this picker.
-$expectKeys = @($(if ($claudeEnabled) { 'alt-c' }), $(if ($opencodeEnabled) { 'alt-o' }), 'alt-h', 'alt-s') -join ','
-$headerActions = @('enter: open', 'tab: mark', $(if ($claudeEnabled) { 'alt-c: claude' }), $(if ($opencodeEnabled) { 'alt-o: opencode' }), 'alt-h: hide', 'alt-s: show', 'alt-p: preview', 'esc: reload') -join ' | '
+$expectKeys = 'alt-t,alt-h,alt-s'
+$headerActions = @('enter: open', 'tab: mark', 'alt-t: open with', 'alt-h: hide', 'alt-s: show', 'alt-p: preview', 'esc: reload') -join ' | '
 $fzfSh = @"
 #!/bin/bash
 # `$1 = list file (CRLF from PowerShell -- strip CRs), `$2 = pick output file
@@ -765,9 +759,8 @@ function Get-Sessions($visibility = 'visible') {
 # screen (no rescan, no reshuffle). Esc reloads the whole script so code changes are picked up; close the
 # window to quit. Scan up front, then restart the script when Esc asks for it.
 # Synthetic first row: picking it (id __NEW__) triggers the folder picker below --
-# with codex on enter/click, or a transfer target on its hotkey, same as the session rows.
-$newTargets = @($(if ($claudeEnabled) { 'alt-c: claude' }), $(if ($opencodeEnabled) { 'alt-o: opencode' })) -join ' | '
-$newRow = if ($newTargets) { "+ New session (choose folder)...  [enter: codex | $newTargets]`t__NEW__`t`t" } else { "+ New session (choose folder)...  [enter: codex]`t__NEW__`t`t" }
+# with codex on enter/click, or a destination through Alt-T, same as the session rows.
+$newRow = "+ New session (choose folder)...  [enter: codex | alt-t: open with]`t__NEW__`t`t"
 
 function Restart-Script {
     Write-Host "Reloading script..."
@@ -898,7 +891,7 @@ while ($true) {
     Remove-Item $pickWin -ErrorAction SilentlyContinue
     Invoke-Bash $fzfShWsl $listWsl $pickWsl
 
-    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-c', 'alt-h', or 'alt-s') and
+    # --expect puts the pressed key on line 1 ('' for Enter/click, 'alt-t', 'alt-h', or 'alt-s') and
     # the picks after it. Read the lines raw -- a normal accept leaves line 1 BLANK, so
     # blanks can only be filtered out once the key has been taken off the front.
     $out    = @(if (Test-Path $pickWin) { Get-Content $pickWin })
@@ -922,7 +915,12 @@ while ($true) {
     # bash -lic loads the login profile so PATH includes codex.
     # For the keys that launch something, the pressed key chooses the tool once, here;
     # everything below just uses $tool.
-    $tool = if ($key -eq 'alt-c') { 'claude' } elseif ($key -eq 'alt-o') { 'opencode' } else { 'codex' }
+    $tool = 'codex'
+    if ($key -eq 'alt-t') {
+        $target = Select-HubTransferTarget 'codex' $enabledTools
+        if (-not $target) { continue }
+        $tool = $target.Tool
+    }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
     # transcripts into one handoff and seed a single new session (enter/transfer key). The __NEW__ row can't be combined, so drop it first.

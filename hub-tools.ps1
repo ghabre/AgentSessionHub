@@ -1,3 +1,27 @@
+# AGENT_HUB_TOOLS overrides the on/off list beside the launcher.
+function Get-HubRequestedTools {
+    if ($env:AGENT_HUB_TOOLS) {
+        $tools = @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        foreach ($tool in $tools) {
+            if ($tool -notin @('codex', 'claude', 'opencode')) { throw "Unknown agent in AGENT_HUB_TOOLS: $tool" }
+        }
+        return $tools
+    }
+    $file = Join-Path $PSScriptRoot 'agent-hub.config'
+    $settings = @{}
+    foreach ($line in Get-Content -LiteralPath $file) {
+        if ($line -match '^\s*(#.*)?$') { continue }
+        if ($line -notmatch '^\s*(codex|claude|opencode)\s*=\s*(on|off)\s*$') { throw "Invalid entry in ${file}: $line (use agent=on or agent=off)" }
+        $tool = $Matches[1].ToLowerInvariant()
+        if ($settings.ContainsKey($tool)) { throw "Duplicate agent in ${file}: $tool" }
+        $settings[$tool] = $Matches[2] -eq 'on'
+    }
+    foreach ($tool in @('codex', 'claude', 'opencode')) {
+        if (-not $settings.ContainsKey($tool)) { throw "Missing ${tool}=on/off in $file" }
+        if ($settings[$tool]) { $tool }
+    }
+}
+
 # Shared CLI discovery. Native tools must be resolved after the PowerShell profile
 # initializes version managers; Git Bash's PATH can differ from that environment.
 # start-hub publishes the result in AGENT_HUB_AVAILABLE_TOOLS, which Windows Terminal
@@ -97,4 +121,51 @@ function Set-HubClaudeActiveAccount($account) {
     $file = Get-HubClaudeAccountFile
     [void][IO.Directory]::CreateDirectory((Split-Path $file))
     [IO.File]::WriteAllText($file, $account.Name)
+}
+
+function Get-HubTransferTargets([string]$currentTool, [string[]]$enabledTools, $accounts, $activeAccount) {
+    [pscustomobject]@{ Label = 'Open'; Tool = $currentTool; Account = $activeAccount }
+    foreach ($tool in @($currentTool) + @($enabledTools | Where-Object { $_ -ne $currentTool })) {
+        if ($tool -eq 'claude') {
+            $loggedIn = @($accounts | Where-Object { $_.Email -or $_.Uuid })
+            if ($loggedIn.Count -gt 1) {
+                $ordered = @($loggedIn | Where-Object { $_.Name -eq $activeAccount.Name }) +
+                           @($loggedIn | Where-Object { $_.Name -ne $activeAccount.Name })
+                foreach ($account in $ordered) {
+                    $label = if ($account.Email) { $account.Email } else { $account.Name }
+                    [pscustomobject]@{ Label = "claude - $label"; Tool = $tool; Account = $account }
+                }
+                continue
+            }
+        }
+        [pscustomobject]@{ Label = $tool; Tool = $tool; Account = $(if ($tool -eq 'claude') { $activeAccount }) }
+    }
+}
+
+# Use the same backend wrapper and mouse bindings as the session picker. Rows carry
+# numeric IDs so account labels never become shell commands or selection keys.
+function Select-HubTransferTarget([string]$currentTool, [string[]]$enabledTools) {
+    $accounts = @(if ('claude' -in $enabledTools -or $currentTool -eq 'claude') { Get-HubClaudeAccounts })
+    $active = if ($accounts.Count) { Get-HubClaudeActiveAccount $accounts }
+    $targets = @(Get-HubTransferTargets $currentTool $enabledTools $accounts $active)
+    $rows = @(for ($i = 0; $i -lt $targets.Count; $i++) { "$($targets[$i].Label)`t$i" })
+    $targetListWin = Join-Path $tmpWin 'targets.txt'
+    $targetPickWin = Join-Path $tmpWin 'target-pick.txt'
+    $targetShWin = Join-Path $tmpWin 'targets.sh'
+    [IO.File]::WriteAllLines($targetListWin, [string[]]$rows)
+    $targetSh = @"
+#!/bin/bash
+tr -d '\r' < "`$1" | "$fzfPath" \
+    --with-nth=1 --delimiter=`$'\t' --no-multi --no-sort --reverse \
+$clickBinds
+    --prompt='Open with> ' --header='enter: choose | esc: cancel' > "`$2"
+"@ -replace "`r`n", "`n"
+    [IO.File]::WriteAllText($targetShWin, $targetSh)
+    Remove-Item -LiteralPath $targetPickWin -ErrorAction SilentlyContinue
+    Invoke-Bash (ConvertTo-WslPath $targetShWin) (ConvertTo-WslPath $targetListWin) (ConvertTo-WslPath $targetPickWin)
+    $picked = @(if (Test-Path -LiteralPath $targetPickWin) { Get-Content -LiteralPath $targetPickWin -Encoding UTF8 | Where-Object { $_ } })
+    if (-not $picked) { return $null }
+    $target = $targets[[int](($picked[0] -split "`t")[1])]
+    if ($target.Tool -eq 'claude' -and $target.Account) { Set-HubClaudeActiveAccount $target.Account }
+    $target
 }
