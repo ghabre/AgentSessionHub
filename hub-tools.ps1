@@ -1,17 +1,10 @@
 # Enabled CLIs: agent-hub.config beside the launcher, one tool=on|off line each. It is
 # per-machine (gitignored) and written all-on at first use; an unlisted tool is on.
-# AGENT_HUB_TOOLS, when set, overrides it.
 function Get-HubRequestedTools {
     $tools = 'codex', 'claude', 'opencode'
-    if ($env:AGENT_HUB_TOOLS) {
-        return @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -in $tools })
-    }
     $file = Join-Path $PSScriptRoot 'agent-hub.config'
     if (-not (Test-Path -LiteralPath $file)) {
-        [IO.File]::WriteAllLines($file, [string[]](@(
-            '# Set each CLI to on or off, then reload the hub (Esc in a picker).'
-            '# AGENT_HUB_TOOLS, when set, overrides this list.'
-        ) + @($tools | ForEach-Object { "$_=on" })))
+        [IO.File]::WriteAllLines($file, [string[]](@('# Set each CLI to on or off, then reload the hub (Esc in a picker).') + @($tools | ForEach-Object { "$_=on" })))
     }
     $off = @(foreach ($line in Get-Content -LiteralPath $file) {
         if ($line -match '^\s*(#.*)?$') { continue }
@@ -122,9 +115,9 @@ function Set-HubClaudeActiveAccount($account) {
     [IO.File]::WriteAllText($file, $account.Name)
 }
 
+# The current tool leads as "Open (...)"; with several Claude logins that is the active account.
 function Get-HubTransferTargets([string]$currentTool, [string[]]$enabledTools, $accounts, $activeAccount) {
-    [pscustomobject]@{ Label = 'Open'; Tool = $currentTool }   # same as Enter: no account choice
-    foreach ($tool in @($currentTool) + @($enabledTools | Where-Object { $_ -ne $currentTool })) {
+    $targets = @(foreach ($tool in @($currentTool) + @($enabledTools | Where-Object { $_ -ne $currentTool })) {
         if ($tool -eq 'claude') {
             $loggedIn = @($accounts | Where-Object { $_.Email -or $_.Uuid })
             if ($loggedIn.Count -gt 1) {
@@ -138,7 +131,9 @@ function Get-HubTransferTargets([string]$currentTool, [string[]]$enabledTools, $
             }
         }
         [pscustomobject]@{ Label = $tool; Tool = $tool; Account = $(if ($tool -eq 'claude') { $activeAccount }) }
-    }
+    })
+    $targets[0].Label = "Open ($($targets[0].Label))"
+    $targets
 }
 
 # Use the same backend wrapper and mouse bindings as the session picker. Rows carry

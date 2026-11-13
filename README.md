@@ -4,7 +4,7 @@ Browse, resume, and transfer **Codex CLI, Claude Code, and OpenCode** conversati
 
 Each enabled tool gets a session picker with fuzzy search and transcript previews, listing sessions updated in the last 40 days. Reopen a conversation in its project folder, continue it in another agent, or switch Claude accounts while keeping the same session.
 
-- **Alt+T destination menu:** Open and the current tool come first, followed by other enabled agents. Multiple logged-in Claude accounts appear as separate choices.
+- **Alt+T destination menu:** The current tool comes first as Open, followed by other enabled agents. Multiple logged-in Claude accounts appear as separate choices.
 - **Conversation handoffs:** Transfer unseen messages and tool notes, resume an existing linked destination, or combine selected conversations.
 - **Claude accounts:** Share session history across logins, with email labels and account-specific tab colors.
 - **Local backups:** Snapshot session history automatically, including OpenCode's SQLite database.
@@ -47,8 +47,6 @@ opencode=off
 
 This controls hub tabs and transfer destinations. Press Esc to reload an existing picker; relaunch the hub to update its tabs. An explicitly opened picker still offers its own tool.
 
-`AGENT_HUB_TOOLS`, if set, overrides the file with a comma-separated list such as `codex,claude`.
-
 ## Use the picker
 
 | Action | Key |
@@ -65,7 +63,7 @@ This controls hub tabs and transfer destinations. Press Esc to reload an existin
 
 Mouse clicks highlight a row; clicking that highlighted row again opens it. Use the first **New session** row to choose a project folder or create one.
 
-In the Claude picker, choosing another Claude account through Alt+T resumes the original session without exporting a handoff. Accounts use `~/.claude` and numbered `~/.claude-<n>` folders in the chosen backend. Alt+A's new-account option creates the next numbered folder on the next Claude launch; sign in there to add a login. Native Windows account sharing requires permission to create symbolic links, normally enabled through Windows Developer Mode.
+In the Claude picker, choosing another Claude account through Alt+T resumes the original session without exporting a handoff. Accounts use `~/.claude` and numbered `~/.claude-<n>` folders in the chosen backend. Alt+A's new-account option creates the next numbered folder on the next Claude launch; sign in there to add a login. Native Windows account sharing requires permission to create symbolic links, normally enabled through Windows Developer Mode. To share history between Claude logins without the hub, see [claude-account-switching.md](claude-account-switching.md); the hub only recognizes numbered folders.
 
 ## Paths and local data
 
