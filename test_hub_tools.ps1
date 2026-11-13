@@ -24,6 +24,8 @@ try {
     }
     $env:AGENT_HUB_TOOLS = 'claude, codex'
     Assert-True ((@(Get-HubRequestedTools) -join ',') -eq 'claude,codex') 'Environment override failed.'
+    $env:AGENT_HUB_TOOLS = 'codex,claude,claude-work,opencode'
+    Assert-True ((@(Get-HubRequestedTools) -join ',') -eq 'codex,claude,opencode') 'Obsolete account entry prevented CLI discovery.'
     $accounts = @(
         [pscustomobject]@{ Name = '.claude'; Email = 'first@example.com'; Uuid = '1'; Shared = $true; Dir = '/home/test/.claude' }
         [pscustomobject]@{ Name = '.claude-2'; Email = "second.o'brien@example.com"; Uuid = '2'; Shared = $false; Dir = '/home/test/.claude-2' }

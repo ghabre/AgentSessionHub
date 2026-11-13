@@ -1,11 +1,8 @@
 # AGENT_HUB_TOOLS overrides the on/off list beside the launcher.
 function Get-HubRequestedTools {
     if ($env:AGENT_HUB_TOOLS) {
-        $tools = @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        foreach ($tool in $tools) {
-            if ($tool -notin @('codex', 'claude', 'opencode')) { throw "Unknown agent in AGENT_HUB_TOOLS: $tool" }
-        }
-        return $tools
+        return @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' |
+            ForEach-Object { $_.Trim() } | Where-Object { $_ -in @('codex', 'claude', 'opencode') })
     }
     $file = Join-Path $PSScriptRoot 'agent-hub.config'
     $settings = @{}
