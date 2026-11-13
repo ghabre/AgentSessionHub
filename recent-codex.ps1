@@ -16,7 +16,7 @@
 # Transfers resume a unique linked destination automatically, importing only
 # unseen messages and tool notes. Multiple branches require a destination choice.
 # A repeated transfer with no new material resumes without adding a prompt.
-# Tab marks multiple sessions; Enter or a transfer key continues their combined
+# Tab marks multiple sessions; Enter or Alt-T continues their combined
 # conversation, reusing the existing result when known.
 # Transfer state and immutable payloads live in the gitignored .history folder beside this script,
 # separately for each backend/distro. Keep this directory to preserve synchronization.
@@ -923,7 +923,7 @@ while ($true) {
     }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
-    # transcripts into one handoff and seed a single new session (enter/transfer key). The __NEW__ row can't be combined, so drop it first.
+    # transcripts into one handoff and seed a single new session (Enter or Alt-T). The __NEW__ row can't be combined, so drop it first.
     $realItems = @(foreach ($row in $picked) {
         $p = $row -split "`t"
         if ($p[1] -ne '__NEW__') { [pscustomobject]@{ Id = $p[1]; Cwd = $p[2]; Tr = $p[3] } }

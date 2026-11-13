@@ -11,7 +11,7 @@ try {
     exit 1
 }
 $env:AGENT_HUB_AVAILABLE_TOOLS = $available -join ','
-$missing = @($requested | Where-Object { $_ -in @('codex', 'claude', 'opencode') -and $_ -notin $available })
+$missing = @($requested | Where-Object { $_ -notin $available })
 $showReminder = Show-HubMissingTools $missing
 $tabs = @()
 # One Claude tab: accounts share its history and are switched inside it with Alt-A.

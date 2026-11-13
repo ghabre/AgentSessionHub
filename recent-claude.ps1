@@ -16,7 +16,7 @@
 # Transfers resume a unique linked destination automatically, importing only
 # unseen messages and tool notes. Multiple branches require a destination choice.
 # A repeated transfer with no new material resumes without adding a prompt.
-# Tab marks multiple sessions; Enter or a transfer key continues their combined
+# Tab marks multiple sessions; Enter or Alt-T continues their combined
 # conversation, reusing the existing result when known.
 # Transfer state and immutable payloads live in the gitignored .history folder beside this script,
 # separately for each backend/distro. Keep this directory to preserve synchronization.
@@ -816,7 +816,7 @@ while ($true) {
         $target = Select-HubTransferTarget 'claude' $enabledTools
         if (-not $target) { continue }
         $tool = $target.Tool
-        if ($tool -eq 'claude') {
+        if ($target.Account) {
             $script:account = $target.Account
             $newAccount = $false
         }
@@ -830,7 +830,7 @@ while ($true) {
     }
 
     # Tab-marking 2+ real session rows means "combine", not "open each": merge their
-    # transcripts into one handoff and seed a single new session (enter/transfer key). The __NEW__ row can't be combined, so drop it first.
+    # transcripts into one handoff and seed a single new session (Enter or Alt-T). The __NEW__ row can't be combined, so drop it first.
     # A /cd since the scan moved the transcript into the new folder's project dir: find it again
     # and re-read its relocation so picks follow the move without an Esc reload.
     $items = @(foreach ($row in $picked) {
