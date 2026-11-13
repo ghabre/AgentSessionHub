@@ -1,5 +1,7 @@
 # Generated local transcript snapshots may contain private conversation data.
 backups/
 .history/
+# Per-machine list of enabled CLIs, created at first launch.
+agent-hub.config
 .vs/
 __pycache__/

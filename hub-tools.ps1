@@ -1,22 +1,24 @@
-# AGENT_HUB_TOOLS overrides the on/off list beside the launcher.
+# Enabled CLIs: agent-hub.config beside the launcher, one tool=on|off line each. It is
+# per-machine (gitignored) and written all-on at first use; an unlisted tool is on.
+# AGENT_HUB_TOOLS, when set, overrides it.
 function Get-HubRequestedTools {
+    $tools = 'codex', 'claude', 'opencode'
     if ($env:AGENT_HUB_TOOLS) {
-        return @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' |
-            ForEach-Object { $_.Trim() } | Where-Object { $_ -in @('codex', 'claude', 'opencode') })
+        return @($env:AGENT_HUB_TOOLS.ToLowerInvariant() -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -in $tools })
     }
     $file = Join-Path $PSScriptRoot 'agent-hub.config'
-    $settings = @{}
-    foreach ($line in Get-Content -LiteralPath $file) {
+    if (-not (Test-Path -LiteralPath $file)) {
+        [IO.File]::WriteAllLines($file, [string[]](@(
+            '# Set each CLI to on or off, then reload the hub (Esc in a picker).'
+            '# AGENT_HUB_TOOLS, when set, overrides this list.'
+        ) + @($tools | ForEach-Object { "$_=on" })))
+    }
+    $off = @(foreach ($line in Get-Content -LiteralPath $file) {
         if ($line -match '^\s*(#.*)?$') { continue }
         if ($line -notmatch '^\s*(codex|claude|opencode)\s*=\s*(on|off)\s*$') { throw "Invalid entry in ${file}: $line (use agent=on or agent=off)" }
-        $tool = $Matches[1].ToLowerInvariant()
-        if ($settings.ContainsKey($tool)) { throw "Duplicate agent in ${file}: $tool" }
-        $settings[$tool] = $Matches[2] -eq 'on'
-    }
-    foreach ($tool in @('codex', 'claude', 'opencode')) {
-        if (-not $settings.ContainsKey($tool)) { throw "Missing ${tool}=on/off in $file" }
-        if ($settings[$tool]) { $tool }
-    }
+        if ($Matches[2] -eq 'off') { $Matches[1] }
+    })
+    $tools | Where-Object { $_ -notin $off }
 }
 
 # Shared CLI discovery. Native tools must be resolved after the PowerShell profile
