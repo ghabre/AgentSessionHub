@@ -37,7 +37,7 @@ The hub opens a picker tab for each enabled, installed CLI. You can also launch 
 
 ## Choose which agents appear
 
-Edit [agent-hub.config](agent-hub.config), setting each CLI to `on` or `off`. For example:
+The first launch creates `agent-hub.config` in this folder with every CLI on. It is per-machine and gitignored; set each CLI to `on` or `off`. For example:
 
 ```ini
 codex=on

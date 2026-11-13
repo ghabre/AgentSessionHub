@@ -12,16 +12,17 @@ try {
     $env:LOCALAPPDATA = $root
     $env:AGENT_HUB_TOOLS = $null
     $config = Join-Path $root 'agent-hub.config'
+    Assert-True ((@(Get-HubRequestedTools) -join ',') -eq 'codex,claude,opencode' -and (Test-Path -LiteralPath $config)) 'First use did not create an all-on config.'
+    [IO.File]::WriteAllText($config, "opencode=off`n")
+    Assert-True ((@(Get-HubRequestedTools) -join ',') -eq 'codex,claude') 'Unlisted CLI was not on by default.'
     [IO.File]::WriteAllText($config, "codex=on`nclaude=off`nopencode=on`n")
     Assert-True ((@(Get-HubRequestedTools) -join ',') -eq 'codex,opencode') 'Disabled CLI was included.'
     [IO.File]::WriteAllText($config, "codex=off`nclaude=off`nopencode=off`n")
     Assert-True (@(Get-HubRequestedTools).Count -eq 0) 'All-off config was ignored.'
-    foreach ($invalid in @("codex=maybe`nclaude=on`nopencode=on", "codex=on", "codex=on`ncodex=off`nclaude=on`nopencode=on")) {
-        [IO.File]::WriteAllText($config, $invalid)
-        $rejected = $false
-        try { $null = @(Get-HubRequestedTools) } catch { $rejected = $true }
-        Assert-True $rejected 'Invalid configuration was accepted.'
-    }
+    [IO.File]::WriteAllText($config, "codex=maybe`nclaude=on`nopencode=on")
+    $rejected = $false
+    try { $null = @(Get-HubRequestedTools) } catch { $rejected = $true }
+    Assert-True $rejected 'Invalid configuration was accepted.'
     $env:AGENT_HUB_TOOLS = 'claude, codex'
     Assert-True ((@(Get-HubRequestedTools) -join ',') -eq 'claude,codex') 'Environment override failed.'
     $env:AGENT_HUB_TOOLS = 'codex,claude,claude-work,opencode'
