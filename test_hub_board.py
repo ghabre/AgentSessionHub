@@ -84,7 +84,7 @@ class BoardTest(unittest.TestCase):
         lines = hub_board.render([parent], self.now, 200)
 
         self.assertEqual([line.split() for line in lines[1:]],
-                         [['claude', 'proj', 'busy', '1m', 'parent'], ['└', 'Explore', 'running', '5s', 'child']])
+                         [['claude', 'proj', 'busy', '1m', 'parent'], ['\\_', 'Explore', 'running', '5s', 'child']])
 
 
 if __name__ == '__main__':
