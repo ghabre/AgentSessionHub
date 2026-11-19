@@ -10,7 +10,7 @@ This repository contains Windows launchers and PowerShell utilities for Codex, C
 
 - `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the `history` and `active` tabs. The per-machine, gitignored `agent-hub.config`, created all-on at first launch, turns each of `codex`, `claude` and `opencode` on or off.
 - `recent-history.ps1` is the `history` tab: one picker over all three agents that creates backups, exports handoffs, and launches Windows Terminal tabs. `handoff_sync.py` lists its rows (`list`), previews sessions and plans handoffs; `handoff-sync.ps1` launches them.
-- `hub_board.py` is the hub's `active` tab: a read-only live board of running sessions and their subagents, run in the selected backend.
+- `hub_board.py` is the hub's `active` tab: a read-only live board of running sessions with their model, subagents and (Claude, WSL backend) shells, run in the selected backend.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
 
