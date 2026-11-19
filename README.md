@@ -2,14 +2,14 @@
 
 Browse, resume, and transfer **Codex CLI, Claude Code, and OpenCode** conversations in Windows Terminal. Agent Session Hub is a PowerShell session manager for Windows, with support for agents installed in WSL2 or natively on Windows.
 
-Each enabled tool gets a session picker with fuzzy search and transcript previews, listing sessions updated in the last 40 days (set `AGENT_HUB_DAYS` to change the window). Reopen a conversation in its project folder, continue it in another agent, or switch Claude accounts while keeping the same session.
+The hub opens two tabs. **history** is one picker over every enabled agent, with fuzzy search and transcript previews: conversations updated in the last 40 days (set `AGENT_HUB_DAYS` to change the window), newest first, each showing its age, agent and session id. A conversation handed between agents appears once, under the agent that used it last. **active** is a live board of running sessions with their state, last action and subagents.
 
-- **Alt+T destination menu:** The current tool comes first as Open, followed by other enabled agents. Multiple logged-in Claude accounts appear as separate choices.
+Reopen a conversation in its project folder, continue it in another agent, or switch Claude accounts while keeping the same session.
+
+- **Alt+T destination menu:** The conversation's own agent comes first as Open, followed by other enabled agents. Multiple logged-in Claude accounts appear as separate choices.
 - **Conversation handoffs:** Transfer unseen messages and tool notes, resume an existing linked destination, or combine selected conversations.
 - **Claude accounts:** Share session history across logins, with email labels and account-specific tab colors.
 - **Local backups:** Snapshot session history automatically, including OpenCode's SQLite database.
-- **History tab:** One list of conversations across all agents, newest first. A conversation handed between agents appears once, under the agent that used it last.
-- **Active board:** A live tab lists running sessions across all agents with their state, last action and subagents.
 
 ## Get started
 
@@ -35,8 +35,6 @@ $env:AGENT_HUB_BACKEND = 'windows'
 .\AgentSessionHub.cmd
 ```
 
-The hub opens a picker tab for each enabled, installed CLI. You can also launch an individual picker with `codex.cmd`, `claude.cmd`, or `opencode.cmd` from this folder.
-
 ## Choose which agents appear
 
 The first launch creates `agent-hub.config` in this folder with every CLI on. It is per-machine and gitignored; set each CLI to `on` or `off`. For example:
@@ -47,9 +45,9 @@ claude=on
 opencode=off
 ```
 
-This controls hub tabs and transfer destinations. Press Esc to reload an existing picker; relaunch the hub to update its tabs. An explicitly opened picker still offers its own tool.
+This controls which agents' conversations are listed, backed up and offered as destinations. Press Esc in the picker to apply a change.
 
-## Use the picker
+## Use the history picker
 
 | Action | Key |
 | --- | --- |
@@ -61,15 +59,15 @@ This controls hub tabs and transfer destinations. Press Esc to reload an existin
 | Hide selected sessions from the picker | Alt+H |
 | Restore hidden sessions | Alt+S |
 | Reload sessions and configuration | Esc |
-| Cycle Claude accounts, ending at a new-account option | Alt+A in the Claude picker |
+| Cycle Claude accounts, ending at a new-account option | Alt+A |
 
-Mouse clicks highlight a row; clicking that highlighted row again opens it. Use the first **New session** row to choose a project folder or create one.
+Mouse clicks highlight a row; clicking that highlighted row again opens it. Use the first **New session** row to choose an agent, then a project folder or a new one.
 
-In the Claude picker, choosing another Claude account through Alt+T resumes the original session without exporting a handoff. Accounts use `~/.claude` and numbered `~/.claude-<n>` folders in the chosen backend. Alt+A's new-account option creates the next numbered folder on the next Claude launch; sign in there to add a login. Native Windows account sharing requires permission to create symbolic links, normally enabled through Windows Developer Mode. To share history between Claude logins without the hub, see [claude-account-switching.md](claude-account-switching.md); the hub only recognizes numbered folders.
+For a Claude conversation, choosing another Claude account through Alt+T resumes the original session without exporting a handoff. Accounts use `~/.claude` and numbered `~/.claude-<n>` folders in the chosen backend. Alt+A's new-account option creates the next numbered folder on the next Claude launch; sign in there to add a login. Native Windows account sharing requires permission to create symbolic links, normally enabled through Windows Developer Mode. To share history between Claude logins without the hub, see [claude-account-switching.md](claude-account-switching.md); the hub only recognizes numbered folders.
 
 ## Paths and local data
 
-The default new-project root is `C:\G\code`. Override it with `AGENT_HUB_NEW_ROOT`, or set `CODEX_NEW_ROOT`, `CLAUDE_NEW_ROOT`, or `OPENCODE_NEW_ROOT` for one picker. Use Windows paths.
+The default new-project root is `C:\G\code`. Override it with `AGENT_HUB_NEW_ROOT`, a Windows path.
 
 For WSL, `WSL_DISTRO` selects a distribution and `WSL_USER` overrides home-directory discovery. OpenCode database discovery respects `OPENCODE_DB` and `XDG_DATA_HOME` in the selected backend.
 

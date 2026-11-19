@@ -6,31 +6,28 @@ After every completed repository change, automatically create a Git commit with 
 
 ## Project Structure & Module Organization
 
-This repository contains Windows launchers and PowerShell utilities for Codex, Claude Code and OpenCode sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see each picker's header).
+This repository contains Windows launchers and PowerShell utilities for Codex, Claude Code and OpenCode sessions stored in WSL, or natively on Windows when `AGENT_HUB_BACKEND=windows` (helper scripts then run under Git for Windows' bash; see the header of `recent-history.ps1`).
 
-- `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
-- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. The per-machine, gitignored `agent-hub.config`, created all-on at first launch, turns each of `codex`, `claude` and `opencode` on or off. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
-- `recent-history.ps1` is the `history` tab: one picker over all three agents, listed by `handoff_sync.py list`. It is meant to replace the per-agent pickers and is not mirrored; until it does, backups and Codex title syncing stay in those pickers.
+- `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the `history` and `active` tabs. The per-machine, gitignored `agent-hub.config`, created all-on at first launch, turns each of `codex`, `claude` and `opencode` on or off.
+- `recent-history.ps1` is the `history` tab: one picker over all three agents that creates backups, exports handoffs, and launches Windows Terminal tabs. `handoff_sync.py` lists its rows (`list`), previews sessions and plans handoffs; `handoff-sync.ps1` launches them.
 - `hub_board.py` is the hub's `active` tab: a read-only live board of running sessions and their subagents, run in the selected backend.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
 
-Claude accounts are logins that share one session history in `~/.claude`. `~/.claude` is the first account; every numbered `~/.claude-<n>` folder is another and keeps only its login. `claude-accounts.sh` lists them with their login emails, links everything else to `~/.claude`, and creates the next `~/.claude-<n>` on request; it never deletes, renaming anything in the way to `*.pre-shared-<stamp>`, and skips accounts with live sessions. Alt-A in the Claude picker cycles the active account (saved in `%LOCALAPPDATA%\AgentSessionHub\claude-account.txt`), shown by email in the prompt, with a final new-account stop; every Claude launch and handoff uses the active account and its tab color. The first account launches with `CLAUDE_CONFIG_DIR` unset because its account file is `~/.claude.json`.
+Claude accounts are logins that share one session history in `~/.claude`. `~/.claude` is the first account; every numbered `~/.claude-<n>` folder is another and keeps only its login. `claude-accounts.sh` lists them with their login emails, links everything else to `~/.claude`, and creates the next `~/.claude-<n>` on request; it never deletes, renaming anything in the way to `*.pre-shared-<stamp>`, and skips accounts with live sessions. Alt-A in the history picker cycles the active account (saved in `%LOCALAPPDATA%\AgentSessionHub\claude-account.txt`), shown by email in the prompt, with a final new-account stop; every Claude launch and handoff uses the active account and its tab color. The first account launches with `CLAUDE_CONFIG_DIR` unset because its account file is `~/.claude.json`.
 
-OpenCode stores all projects in one SQLite database (`~/.local/share/opencode/opencode.db` by default); `recent-opencode.ps1` reads it with Python 3 and snapshots it through SQLite's online backup API. Its global instructions live in `~/.config/opencode/AGENTS.md`, which points at the same shared memory file used by Codex and Claude.
+OpenCode stores all projects in one SQLite database (`~/.local/share/opencode/opencode.db` by default); `handoff_sync.py` reads it and the picker snapshots it through SQLite's online backup API. Its global instructions live in `~/.config/opencode/AGENTS.md`, which points at the same shared memory file used by Codex and Claude.
 
-## Paired Script Changes
+## Agent Differences
 
-Treat `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` as mirrored implementations. Apply changes to picker behavior, handoffs, previews, backups, WSL integration, and launch flow symmetrically. Preserve intentional product-specific differences: command names, data directories, storage formats (JSONL transcripts vs. `opencode.db`), prompts, and environment-variable prefixes. State how parity was verified; explain any one-script-only change.
+One picker serves all three agents, so vary only what differs per agent: command names, data directories, storage formats (JSONL transcripts vs. `opencode.db`), prompts, and environment-variable prefixes. A change to listing, handoffs, previews, backups or launch flow must keep working for each of them; state how that was verified.
 
 ## Build, Test, and Development Commands
 
 There is no compilation step. Run scripts from Windows PowerShell because they depend on Windows Terminal, WSL, and Windows APIs:
 
 ```powershell
-powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-codex.ps1
-powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-claude.ps1
-powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-opencode.ps1
+powershell.exe -NoExit -ExecutionPolicy Bypass -File .\recent-history.ps1
 powershell.exe -ExecutionPolicy Bypass -File .\fixclip.ps1
 ```
 
@@ -38,7 +35,7 @@ Before submitting changes, perform a parser check:
 
 ```powershell
 $errors = $null
-[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\recent-codex.ps1), [ref]$null, [ref]$errors)
+[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\recent-history.ps1), [ref]$null, [ref]$errors)
 $errors
 ```
 
@@ -50,7 +47,7 @@ Use four-space indentation in PowerShell blocks. Follow existing PowerShell conv
 
 ## Testing Guidelines
 
-Run the checks in the README's Development section and parser-check every modified `.ps1`, then manually exercise the affected picker action in all three session pickers: new session, resume, Alt-T destination menu (handoff, and Claude account rows), preview pane (Alt-P), multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
+Run the checks in the README's Development section and parser-check every modified `.ps1`, then manually exercise the affected picker action for each agent: new session, resume, Alt-T destination menu (handoff, and Claude account rows), preview pane (Alt-P), multi-select, or backup rotation. Confirm both keyboard and mouse behavior when changing `fzf` bindings. For OpenCode, also verify that session listing, handoff export, and database backup still work with `OPENCODE_DB` or `XDG_DATA_HOME` set.
 
 ## Commit & Pull Request Guidelines
 

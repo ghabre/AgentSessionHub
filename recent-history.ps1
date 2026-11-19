@@ -9,9 +9,34 @@
 # Picking takes two clicks: the first left-click on a row only highlights it, a second
 # click on that same row opens it. Esc reloads this script in-place; close the window to quit.
 #
-# Backend, requirements and overrides are those of the per-agent pickers (recent-claude.ps1);
-# hidden conversations and the active Claude account are shared with them. Backups are still
-# taken by the per-agent pickers.
+# Transfer state and immutable payloads live in the gitignored .history folder beside this
+# script, separately for each backend/distro. Keep it to preserve synchronization.
+#
+# On startup it snapshots each enabled agent's history to .\backups\<tool>, when that agent's
+# newest snapshot is more than 24 hours old, and keeps the 10 most recent.
+#
+# Claude accounts: one session history (~/.claude), several logins. ~/.claude is the first
+# account and every ~/.claude-<n> folder another, keeping only its login; claude-accounts.sh
+# links the rest of each to ~/.claude. Alt-A cycles the active account, named by its login
+# email in the prompt, and every Claude launch, resume and handoff opens in it with the
+# account's tab color. The last Alt-A stop is a new account: the next Claude launch creates
+# ~/.claude-<n>, where Claude asks for the login once.
+#
+# Backend: $env:AGENT_HUB_BACKEND = 'wsl' (default) or 'windows'.
+#   wsl     : the agent CLIs are installed INSIDE WSL; the requirements below apply as written.
+#   windows : the CLIs are installed natively. The same helper scripts run under Git for
+#             Windows' bash; fzf, Python and the CLIs come from the Windows PATH, and tabs
+#             open in PowerShell 7, whose profile supplies per-shell tools. No WSL is used.
+#
+# Requirements (wsl backend):
+#   - Windows Terminal (wt.exe) -- used to open sessions as tabs.
+#   - The Linux build of fzf installed in WSL (NOT fzf.exe -- the Windows build mis-parses
+#     Windows Terminal mouse input), found via the WSL login-shell PATH or ~/.local/bin.
+#   - Python 3.8+ with SQLite, which lists conversations and plans handoffs.
+#   - The enabled CLIs reachable from the WSL login shell (bash -lic).
+#
+# Auto-detected: the default WSL distro and the fzf path. Overrides: $env:WSL_DISTRO forces a
+# distro, $env:WSL_USER the home user, $env:AGENT_HUB_NEW_ROOT the new-session root.
 
 param([switch]$Run)
 # The outer invocation is only this loop. Esc makes the picker exit with 75 and it is rerun in a
@@ -145,8 +170,6 @@ function Open-WtTab($title, $cwd, $command, $color) {
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
 }
 
-# The row's own tool is the source of a transfer, so it is set per pick.
-$hubTool = $null
 . (Join-Path $PSScriptRoot 'handoff-sync.ps1')
 $stores = @{ codex = "$bashHome/.codex/sessions"; claude = "$bashHome/.claude/projects"; opencode = $opencodeDbWsl }
 $scope = if ($backend -eq 'wsl') { "wsl-$distro" } else { 'windows' }
@@ -306,7 +329,207 @@ $clickBinds
 [System.IO.File]::WriteAllText($fzfDirShWin, $fzfDirSh)
 # -----------------------------------------------------------------------------------
 
-# Hidden conversations are the per-agent pickers' lists, one id per line for each tool.
+# --- Backups -----------------------------------------------------------------------
+# The session stores are the only record of past conversations and, under WSL, live inside
+# the VHD, so snapshots are written to the WINDOWS side: they survive `wsl --unregister`, a
+# VHD corruption, or a distro rebuild. Each tool has its own folder (backups\<tool>, override
+# with $env:<TOOL>_BACKUP_DIR), its own clock and its own retained snapshots.
+$backupEvery  = 24   # hours between snapshots
+$backupKeep   = 10   # snapshots retained; older ones are pruned
+$backupSources = @{ codex = "$bashHome/.codex"; claude = "$bashHome/.claude"; opencode = $opencodeDbWsl }
+
+# backup-db.py: a consistent OpenCode snapshot through SQLite's online backup API. A plain
+# `cp` while OpenCode is writing can capture a torn database or miss the WAL.
+$backupPyWin = Join-Path $tmpWin 'backup-db.py'; $backupPyWsl = "$tmpWsl/backup-db.py"
+$backupPy = @'
+import pathlib, sqlite3, sys
+
+conn = sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri() + "?mode=ro", uri=True)
+out = sqlite3.connect(sys.argv[2])
+with out:
+    conn.backup(out)
+out.close()
+conn.close()
+'@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($backupPyWin, $backupPy)
+
+# backup.sh: throttle, snapshot, prune. All three decisions are driven by ONE source of
+# truth -- the snapshot filenames themselves (<tool>-history-<stamp>.tar.gz). The stamp
+# says when that snapshot was taken, so "is the newest one older than $backupEvery" and
+# "which are the oldest to prune" are both answered by sorting the names; no sidecar
+# timestamp file to drift out of sync, and the format sorts chronologically as text.
+# mtime is deliberately NOT consulted: copying a backup would rewrite it, the name survives.
+$backupShWin = Join-Path $tmpWin 'backup.sh'; $backupShWsl = "$tmpWsl/backup.sh"
+$backupSh = @"
+#!/bin/bash
+# `$1 = tool, `$2 = backup dir (Linux path), `$3 = the tool's home, or opencode.db for OpenCode.
+# Prints the snapshot it made, or nothing if none was due.
+tool="`$1"; dir="`$2"; source="`$3"
+interval=`$(( $backupEvery * 3600 ))
+# Click-state files of pickers long gone; a live picker rewrites its own on every focus change.
+find /tmp -maxdepth 1 -name 'recent-history-*-click.state' -mtime +7 -delete 2>/dev/null
+mkdir -p "`$dir" 2>/dev/null || exit 0
+
+newest=`$(ls -1 "`$dir"/"`$tool"-history-*.tar.gz 2>/dev/null | sort | tail -1)
+if [ -n "`$newest" ]; then
+    ts=`${newest##*/`$tool-history-}; ts=`${ts%.tar.gz}
+    last=`$(date -d "`${ts:0:4}-`${ts:4:2}-`${ts:6:2} `${ts:9:2}:`${ts:11:2}:`${ts:13:2}" +%s 2>/dev/null)
+    # Unparsable name (hand-renamed?) -> treat as no backup and take one; better an extra
+    # snapshot than a skipped one.
+    [ -n "`$last" ] && [ `$(( `$(date +%s) - last )) -lt "`$interval" ] && exit 0
+fi
+
+out="`$dir/`$tool-history-`$(date +%Y%m%d-%H%M%S).tar.gz"
+case "`$tool" in
+    claude)
+        cd "`$source" 2>/dev/null || exit 0
+        set -- projects
+        [ -f history.jsonl ] && set -- "`$@" history.jsonl ;;   # the prompt history, same category, tiny
+    codex)
+        cd "`$source" 2>/dev/null || exit 0
+        set -- sessions
+        [ -f session_index.jsonl ] && set -- "`$@" session_index.jsonl ;;
+    opencode)
+        work=`$(mktemp -d "`${TMPDIR:-/tmp}/opencode-backup.XXXXXX") || exit 0
+        trap 'rm -rf "`$work"' EXIT
+        bash '$($syncRunnerWsl.Replace("'", "'\''"))' '$($backupPyWsl.Replace("'", "'\''"))' "`$source" "`$work/opencode.db" || exit 0
+        [ -s "`$work/opencode.db" ] || exit 0
+        cd "`$work"
+        set -- opencode.db ;;
+esac
+
+# Write aside, then rename: the glob above only ever sees finished snapshots, so an
+# interrupted run can't pass a truncated file off as recent and suppress the next day.
+# tar exits 1 for warnings alone -- a live session appending to a .jsonl mid-read is
+# expected here and yields a good-enough snapshot; only a fatal 2 aborts the rename.
+tar --warning=no-file-changed -czf "`$out.part" "`$@" 2>/dev/null
+[ `$? -ge 2 ] && { rm -f "`$out.part"; exit 0; }
+mv -f "`$out.part" "`$out" || exit 0
+echo "`$out"
+
+# Prune oldest-first, keeping the newest $backupKeep.
+ls -1 "`$dir"/"`$tool"-history-*.tar.gz 2>/dev/null | sort | head -n -$backupKeep | xargs -r rm -f
+"@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($backupShWin, $backupSh)
+
+# Runs once per launch for each enabled tool; backup.sh itself decides whether one is due.
+function Invoke-Backup {
+    foreach ($tool in $enabledTools) {
+        $override = [Environment]::GetEnvironmentVariable("$($tool.ToUpper())_BACKUP_DIR")
+        $backupDir = if ($override) { $override } else { Join-Path $PSScriptRoot "backups\$tool" }
+        Write-Host "Checking $tool backup..." -NoNewline
+        $made = @(Invoke-Bash $backupShWsl $tool (ConvertTo-WslPath $backupDir) $backupSources[$tool] | Where-Object { $_ })
+        Write-Host "`r                              `r" -NoNewline
+        if ($made) {
+            $f = Get-Item (Join-Path $backupDir (Split-Path $made[-1] -Leaf)) -ErrorAction SilentlyContinue
+            if ($f) { Write-Host ("Backed up $tool history -> {0} ({1:N1} MB)" -f $f.Name, ($f.Length/1MB)) }
+        }
+    }
+}
+# -----------------------------------------------------------------------------------
+
+# Perform the app-server handshake in Python on the backend's side. PowerShell's
+# asynchronous reads from a redirected wsl.exe pipe can time out even though app-server
+# answers immediately; a native pipe keeps the protocol deterministic and bounded. A reader
+# thread (not select, which Windows only supports on sockets) bounds each wait.
+# Args: thread id, name, then the app-server command (default: codex via the login shell).
+$titleSetWin = Join-Path $tmpWin 'set-title.py'; $titleSetWsl = "$tmpWsl/set-title.py"
+$titleSet = @'
+import json
+import queue
+import subprocess
+import sys
+import threading
+import time
+
+process = subprocess.Popen(
+    sys.argv[3:] or ["bash", "-lic", "codex app-server"],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    text=True,
+    encoding="utf-8",
+    bufsize=1,
+)
+lines = queue.Queue()
+
+def read_lines():
+    for line in process.stdout:
+        lines.put(line)
+    lines.put(None)
+
+threading.Thread(target=read_lines, daemon=True).start()
+
+def send(message):
+    process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+    process.stdin.flush()
+
+def wait_for(response_id, timeout=8):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            line = lines.get(timeout=max(0, deadline - time.monotonic()))
+        except queue.Empty:
+            break
+        if line is None:
+            break
+        try:
+            response = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if response.get("id") == response_id:
+            if response.get("error"):
+                raise RuntimeError(response["error"].get("message", "app-server request failed"))
+            return
+    raise TimeoutError(f"timed out waiting for app-server response {response_id}")
+
+try:
+    send({"id": 1, "method": "initialize", "params": {
+        "clientInfo": {"name": "agent-session-hub", "title": "Agent Session Hub", "version": "1"},
+        "capabilities": None,
+    }})
+    wait_for(1)
+    send({"method": "initialized"})
+    send({"id": 2, "method": "thread/name/set", "params": {
+        "threadId": sys.argv[1], "name": sys.argv[2],
+    }})
+    wait_for(2)
+    # The response can precede the durable update notification. Keep app-server alive
+    # long enough to commit the new name before terminating the helper process.
+    time.sleep(1)
+finally:
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+'@ -replace "`r`n","`n"
+[System.IO.File]::WriteAllText($titleSetWin, $titleSet)
+
+# Give Codex's live thread store the title shown here when it holds none. Current Codex reads
+# dynamic terminal titles from that store (not session_index.jsonl), so use its supported
+# app-server API rather than editing the SQLite database behind a running CLI.
+function Set-CodexThreadTitle($id, $title) {
+    if (-not $title -or $title -eq 'Untitled session') { return }
+    try {
+        if ($backend -eq 'wsl') { & wsl.exe -d $distro -- python3 $titleSetWsl $id $title }
+        else {
+            $codexCommand = (Get-Command codex.cmd -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+            if (-not $codexCommand -and (Test-Path "$env:APPDATA\fnm\aliases\default\codex.cmd")) { $codexCommand = "$env:APPDATA\fnm\aliases\default\codex.cmd" }
+            if (-not $codexCommand) { throw 'codex.cmd not found' }
+            & python $titleSetWin $id $title $codexCommand app-server
+        }
+        if ($LASTEXITCODE -ne 0) { throw "title helper exited with code $LASTEXITCODE" }
+    } catch {
+        Write-Host "Could not set Codex conversation title: $($_.Exception.Message)"
+        Start-Sleep -Milliseconds 900
+    }
+}
+
+# /cd moves a Claude session permanently and records it as a relocated entry (last one wins).
+$relocatedPattern = '^\{"type":"relocated".*"relocatedCwd":"([^"]+)"'
+
+# Hidden conversations: one id per line, in a file for each tool.
 function Get-HiddenFile($tool) { Join-Path $hubStateDir "hidden-$tool-session-ids.txt" }
 function Get-HiddenKeys {
     foreach ($tool in 'codex', 'claude', 'opencode') {
@@ -462,6 +685,7 @@ function Select-CombinedCwd($items) {
     ($p[0] -split "`t")[1]
 }
 
+Invoke-Backup
 if (-not $enabledTools) { Write-Host 'No enabled CLIs are available. Check agent-hub.config and CLI installation.'; [void](Read-Host 'Press Enter to close'); exit 1 }
 $claudeAccounts = @(if ('claude' -in $enabledTools) { Get-HubClaudeAccounts })
 $newAccount = $false   # Alt-A went past the last account: the next Claude launch creates one
@@ -506,7 +730,15 @@ while ($true) {
 
     $items = @(foreach ($row in $picked) {
         $p = $row -split "`t"
-        [pscustomobject]@{ Id = $p[1]; Cwd = $p[2]; Tool = $p[3]; Title = $p[4] }
+        $item = [pscustomobject]@{ Id = $p[1]; Cwd = $p[2]; Tool = $p[3]; Title = $p[4]; Named = $p[5] -eq '1' }
+        # A /cd since the list was read moved the session: follow it without an Esc reload.
+        if ($item.Tool -eq 'claude') {
+            $transcript = Get-Item (Join-Path (ConvertFrom-WslPath $stores.claude) "*\$($item.Id).jsonl") -ErrorAction SilentlyContinue | Select-Object -First 1
+            $relocated = if ($transcript) { Select-String -LiteralPath $transcript.FullName -Pattern $relocatedPattern | Select-Object -Last 1 }
+            # Native Windows cwds arrive JSON-escaped (C:\\dir); WSL paths have no backslashes.
+            if ($relocated) { $item.Cwd = $relocated.Matches[0].Groups[1].Value -replace '\\\\','\' }
+        }
+        $item
     })
     $realItems = @($items | Where-Object { $_.Id -ne '__NEW__' })
 
@@ -534,8 +766,7 @@ while ($true) {
     # Tab-marking 2+ rows means "combine", not "open each": merge them into one handoff
     # and seed or update a single session, in the first row's agent unless Alt-T chose one.
     if ($realItems.Count -ge 2) {
-        $hubTool = $realItems[0].Tool
-        Invoke-HubTransfer $(if ($moveTo) { $moveTo } else { $hubTool }) $realItems $realItems[0].Cwd
+        Invoke-HubTransfer $(if ($moveTo) { $moveTo } else { $realItems[0].Tool }) $realItems $realItems[0].Cwd
         continue
     }
 
@@ -543,15 +774,18 @@ while ($true) {
         if ($it.Id -eq '__NEW__') { Invoke-NewSession $target.Tool; continue }
         $tool = if ($moveTo) { $moveTo } else { $it.Tool }
         if ($tool -ne $it.Tool) {
-            $hubTool = $it.Tool
             Invoke-HubTransfer $tool @($it) $it.Cwd
             continue
         }
         $tabTitle = if ($it.Title) { $it.Title } else { $it.Id }
         $tabTitle = $tabTitle -replace '[\r\n\]"]', ' '   # '"' would break native argument passing to wt.exe
+        if ($tabTitle.Length -gt 80) { $tabTitle = $tabTitle.Substring(0, 80).TrimEnd() }   # never an unbounded --title
         switch ($tool) {
             'claude'   { Open-WtTab $tabTitle $it.Cwd (New-HubClaudeCommand "claude --resume $($it.Id)" $script:account) $script:account.Color }
-            'codex'    { Open-WtTab "codex: $tabTitle" $it.Cwd "codex -c tui.fullscreen_transcript=false resume $($it.Id)" }
+            'codex'    {
+                if (-not $it.Named) { Set-CodexThreadTitle $it.Id $tabTitle }
+                Open-WtTab "codex: $tabTitle" $it.Cwd "codex -c tui.fullscreen_transcript=false resume $($it.Id)"
+            }
             'opencode' { Open-WtTab "opencode: $tabTitle" $it.Cwd "opencode --session $($it.Id)" }
         }
     }
