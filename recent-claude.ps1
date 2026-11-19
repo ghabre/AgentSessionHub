@@ -1,7 +1,7 @@
 # recent-claude.ps1
 #
 # Fuzzy-picker for Claude Code sessions running inside WSL. Lists top-level transcripts
-# updated within the last 40 days; pick one to resume in a new Windows Terminal tab.
+# updated recently (AGENT_HUB_DAYS); pick one to resume in a new Windows Terminal tab.
 # Picking takes two clicks: the first left-click on a row only highlights it, a second
 # click on that same row opens it (Enter opens the highlighted row straight away). This
 # is deliberately NOT fzf's own double-click, which demands two fast clicks with no mouse
@@ -330,7 +330,7 @@ $scanSh = @"
 if [ "`$1" = all ]; then
     find "`$2/projects" -name '*.jsonl' -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 else
-    find "`$2/projects" -name '*.jsonl' -mtime -40 -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
+    find "`$2/projects" -name '*.jsonl' -mtime -$hubDays -not -path '*/subagents/*' -printf '%T@\t%p\n' 2>/dev/null
 fi |
 while IFS=`$'\t' read -r session_mtime session_path; do
     if ! grep -am1 -oE '"entrypoint":"[^"]*"' "`$session_path" | grep -q '"sdk-'; then
@@ -558,7 +558,7 @@ function Get-Sessions($visibility = 'visible') {
         }
     }
 
-    # Gather top-level sessions updated within 40 days (excluding subagent sidechains),
+    # Gather top-level sessions updated within $hubDays days (excluding subagent sidechains),
     # enumerated natively inside WSL by scan.sh: "epoch-mtime<TAB>linux-path" per line.
     $scanMode = if ($visibility -eq 'hidden') { 'all' } else { 'recent' }
     Invoke-Bash $scanShWsl $scanMode $claudeConfigDirBash |

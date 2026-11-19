@@ -1,7 +1,7 @@
 # recent-opencode.ps1
 #
 # Fuzzy-picker for OpenCode sessions. Lists top-level sessions from opencode.db updated
-# within the last 40 days -- across every project -- and resumes one in a new Windows
+# recently (AGENT_HUB_DAYS) -- across every project -- and resumes one in a new Windows
 # Terminal tab. Picking takes two clicks: the first left-click on a row only highlights
 # it, a second click on that same row opens it (Enter opens the highlighted row straight
 # away). This is deliberately NOT fzf's own double-click, which demands two fast clicks
@@ -319,7 +319,7 @@ exit 127
 # scan-sessions.py: enumerate top-level sessions from opencode.db. One database holds
 # every project, so this is the only way to list them together; the CLI's `session list`
 # is scoped to the current project. parent_id IS NULL excludes subagent/child sessions,
-# time_archived IS NULL excludes archived rows. The 40-day window matches the other
+# time_archived IS NULL excludes archived rows. The day window matches the other
 # pickers. Emits:
 #   epoch<TAB>id<TAB>directory<TAB>title<TAB>transition-source<TAB>inherited-title<TAB>fallback
 # The fallback is the first real user message, used when OpenCode has not titled a
@@ -331,7 +331,7 @@ import json, os, re, sqlite3, sys, time
 
 db = sys.argv[1]
 mode = sys.argv[2] if len(sys.argv) > 2 else 'recent'
-days = int(sys.argv[3]) if len(sys.argv) > 3 else 40
+days = int(sys.argv[3])
 if not os.path.isfile(db):
     sys.exit(0)
 
@@ -577,7 +577,7 @@ function Get-Sessions($visibility = 'visible') {
     # scan-sessions.py emits one row per top-level OpenCode session:
     #   epoch<TAB>id<TAB>directory<TAB>title<TAB>transition-source<TAB>inherited-title<TAB>fallback
     $scanMode = if ($visibility -eq 'hidden') { 'all' } else { 'recent' }
-    Invoke-Bash $pyShWsl $scanPyWsl $opencodeDbWsl $scanMode 40 |
+    Invoke-Bash $pyShWsl $scanPyWsl $opencodeDbWsl $scanMode $hubDays |
         ForEach-Object {
             $parts = $_ -split "`t"
             if ($parts.Count -lt 7) { return }

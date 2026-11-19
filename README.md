@@ -2,7 +2,7 @@
 
 Browse, resume, and transfer **Codex CLI, Claude Code, and OpenCode** conversations in Windows Terminal. Agent Session Hub is a PowerShell session manager for Windows, with support for agents installed in WSL2 or natively on Windows.
 
-Each enabled tool gets a session picker with fuzzy search and transcript previews, listing sessions updated in the last 40 days. Reopen a conversation in its project folder, continue it in another agent, or switch Claude accounts while keeping the same session.
+Each enabled tool gets a session picker with fuzzy search and transcript previews, listing sessions updated in the last 40 days (set `AGENT_HUB_DAYS` to change the window). Reopen a conversation in its project folder, continue it in another agent, or switch Claude accounts while keeping the same session.
 
 - **Alt+T destination menu:** The current tool comes first as Open, followed by other enabled agents. Multiple logged-in Claude accounts appear as separate choices.
 - **Conversation handoffs:** Transfer unseen messages and tool notes, resume an existing linked destination, or combine selected conversations.

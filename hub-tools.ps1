@@ -1,3 +1,6 @@
+# Pickers list sessions updated within this many days.
+$hubDays = if ($env:AGENT_HUB_DAYS) { [int]$env:AGENT_HUB_DAYS } else { 40 }
+
 # Enabled CLIs: agent-hub.config beside the launcher, one tool=on|off line each. It is
 # per-machine (gitignored) and written all-on at first use; an unlisted tool is on.
 function Get-HubRequestedTools {
