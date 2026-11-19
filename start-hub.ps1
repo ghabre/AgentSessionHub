@@ -22,7 +22,7 @@ if (@($requested | Where-Object { $_ -in $available })) {
     }
     $tabs = @('new-tab', '--title', 'history', 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'recent-history.ps1'),
               ';', 'new-tab', '--title', 'active') + $board
-    & $args[0] -w $env:AGENT_SESSION_HUB_WINDOW @tabs
+    & $args[0] -w new @tabs
 }
 if (-not $tabs.Count) { Write-Host 'No enabled CLIs are available. Check agent-hub.config and CLI installation.' }
 if ($showReminder) {

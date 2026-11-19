@@ -151,20 +151,20 @@ $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
 # Locate wt.exe (may not be on PATH depending on launch context)
 $wt = Get-Command wt.exe -ErrorAction SilentlyContinue
 if ($wt) { $wt = $wt.Source } else { $wt = "$env:LOCALAPPDATA\Microsoft\WindowsApps\wt.exe" }
-$wtWindow = if ($env:AGENT_SESSION_HUB_WINDOW) { $env:AGENT_SESSION_HUB_WINDOW } else { '0' }
 
 # wt.exe splits its whole command line on ';' (titles and paths too), so a title such as
 # "a; b" opens several broken tabs. '\;' is wt's literal semicolon.
 # $color, when given, is the tab color: Claude tabs carry their account's.
+# Window 0 is the one in use: the picker's own, wherever its tab has been moved.
 function Open-WtTab($title, $cwd, $command, $color) {
     # Windows PowerShell 5 passes embedded double quotes to wt.exe unescaped, merging arguments.
     $title = $title -replace '"', "'"
     $colorArgs = @(if ($color) { '--tabColor', $color })
     if ($backend -eq 'wsl') {
-        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs `
+        & $wt -w 0 new-tab --title ($title -replace ';', '\;') @colorArgs `
             wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
     } else {
-        & $wt -w $wtWindow new-tab --title ($title -replace ';', '\;') @colorArgs -d ($cwd -replace ';', '\;') `
+        & $wt -w 0 new-tab --title ($title -replace ';', '\;') @colorArgs -d ($cwd -replace ';', '\;') `
             $tabShell -NoLogo -Command ($command -replace ';', '\;')
     }
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
