@@ -8,6 +8,7 @@ Each enabled tool gets a session picker with fuzzy search and transcript preview
 - **Conversation handoffs:** Transfer unseen messages and tool notes, resume an existing linked destination, or combine selected conversations.
 - **Claude accounts:** Share session history across logins, with email labels and account-specific tab colors.
 - **Local backups:** Snapshot session history automatically, including OpenCode's SQLite database.
+- **Active board:** A live tab lists running sessions across all agents with their state, last action and subagents.
 
 ## Get started
 
@@ -80,7 +81,7 @@ Transfer tracking and exported conversation payloads live in `.history/`, separa
 There is no build step. See [AGENTS.md](AGENTS.md) for script conventions and Windows manual checks. Run the existing checks with:
 
 ```powershell
-python -m unittest test_handoff_sync.py
+python -m unittest test_handoff_sync.py test_hub_board.py
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_hub_tools.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test_handoff_sync.ps1
 ```
