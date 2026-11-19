@@ -16,9 +16,7 @@ exit /b 1
 
 :launch
 rem A second launch within %window% seconds of the last one (a double-click on a single-click
-rem pin, an impatient re-click) is ignored, so it can't open a second hub -- or, as before,
-rem stack a second tab pair into the first one's window: cmd seeds %RANDOM% from the current
-rem second, so same-second launches also computed the same window name.
+rem pin, an impatient re-click) is ignored, so it can't open a second hub.
 rem
 rem Each launch claims one lock directory per second for the next %window% seconds, in
 rem increasing order, and gives up at the first one that already exists. mkdir is atomic and
@@ -39,8 +37,4 @@ set /a "last=sec+window-1"
 for /l %%s in (%sec%,1,%last%) do (
     mkdir "%locks%\%day%-%%s" 2>nul || exit /b 0
 )
-rem No other launch can be running now, so the time alone names this hub's window.
-set "AGENT_SESSION_HUB_WINDOW=AgentSessionHub-%day%-%now::=%"
-set "AGENT_SESSION_HUB_WINDOW=%AGENT_SESSION_HUB_WINDOW:.=%"
-set "AGENT_SESSION_HUB_WINDOW=%AGENT_SESSION_HUB_WINDOW:,=%"
 powershell.exe -NoLogo -ExecutionPolicy Bypass -File "%~dp0start-hub.ps1" "%terminal%"
