@@ -10,7 +10,7 @@ function New-HubClaudeCommand($command, $account) {
     if ($backend -eq 'windows') { return "`$env:CLAUDE_CONFIG_DIR = '" + $configDir.Replace("'", "''") + "'; " + $command }
     return "export CLAUDE_CONFIG_DIR='" + $configDir.Replace("'", "'\''") + "'; " + $command
 }
-# Shared by all pickers; native sessions are read by handoff_sync.py, never rewritten.
+# Native sessions are read by handoff_sync.py, never rewritten.
 $syncRunnerWin = Join-Path $tmpWin 'sync-python.sh'
 $syncRunnerWsl = "$tmpWsl/sync-python.sh"
 $syncRunner = @'
@@ -34,16 +34,6 @@ exit 127
 [System.IO.File]::WriteAllText($syncRunnerWin, $syncRunner)
 $syncEngineWsl = ConvertTo-WslPath (Join-Path $PSScriptRoot 'handoff_sync.py')
 
-# fzf options for a session picker: a preview pane with the highlighted session's last turns
-# (column 2 is its id). It starts hidden so the key header keeps the full width; alt-p toggles it. $root is the tool's store, as in the
-# transfer request. Apostrophes in paths are escaped for the single-quoted fzf command.
-function Get-HubPreviewOptions($root) {
-    $runner, $engine, $store = @($syncRunnerWsl, $syncEngineWsl, $root) | ForEach-Object { $_.Replace("'", "'\''") }
-    @"
-    --preview 'bash "$runner" "$engine" preview $hubTool "$store" {2}' \
-    --preview-window 'right,45%,wrap,follow,hidden' --bind 'alt-p:toggle-preview' \
-"@ -replace "`r`n", "`n"
-}
 $syncLaunchWin = Join-Path $tmpWin 'sync-launch.sh'
 $syncLaunchWsl = "$tmpWsl/sync-launch.sh"
 $syncLaunch = @'
@@ -105,8 +95,7 @@ function Invoke-HubTransfer($tool, $items, $cwd) {
             legacy_state_dir = ConvertTo-WslPath (Join-Path $hubStateDir $stateName)
             codex_root = "$bashHome/.codex/sessions"
             opencode_db = $opencodeDbWsl
-            # History rows name their own tool; a per-agent picker's rows are all its own.
-            sources = @($items | ForEach-Object { "$(if ($_.Tool) { $_.Tool } else { $hubTool }):$($_.Id)" })
+            sources = @($items | ForEach-Object { "$($_.Tool):$($_.Id)" })
             tool = $tool
             preview = $true
         }
@@ -166,8 +155,8 @@ $clickBinds
             $cwd = $plan.target.cwd
             $title = $plan.target.title
         }
-        $label = (Get-Culture).TextInfo.ToTitleCase($hubTool)
-        if ($hubTool -eq 'opencode') { $label = 'OpenCode' }
+        # The prompt names the agent the conversation comes from: the first row's.
+        $label = if ($items[0].Tool -eq 'opencode') { 'OpenCode' } else { (Get-Culture).TextInfo.ToTitleCase($items[0].Tool) }
         if (-not $title) { $title = 'untitled' }
         $title = $title -replace '[\r\n\]"]', ' '   # '"' would break native argument passing to wt.exe
         $handoffArg = if ($plan.handoff) { $plan.handoff } else { '-' }

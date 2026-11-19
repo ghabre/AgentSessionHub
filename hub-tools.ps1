@@ -7,7 +7,7 @@ function Get-HubRequestedTools {
     $tools = 'codex', 'claude', 'opencode'
     $file = Join-Path $PSScriptRoot 'agent-hub.config'
     if (-not (Test-Path -LiteralPath $file)) {
-        [IO.File]::WriteAllLines($file, [string[]](@('# Set each CLI to on or off, then reload the hub (Esc in a picker).') + @($tools | ForEach-Object { "$_=on" })))
+        [IO.File]::WriteAllLines($file, [string[]](@('# Set each CLI to on or off, then reload the hub (Esc in the picker).') + @($tools | ForEach-Object { "$_=on" })))
     }
     $off = @(foreach ($line in Get-Content -LiteralPath $file) {
         if ($line -match '^\s*(#.*)?$') { continue }
@@ -20,7 +20,7 @@ function Get-HubRequestedTools {
 # Shared CLI discovery. Native tools must be resolved after the PowerShell profile
 # initializes version managers; Git Bash's PATH can differ from that environment.
 # start-hub publishes the result in AGENT_HUB_AVAILABLE_TOOLS, which Windows Terminal
-# passes to the picker tabs, so only standalone pickers probe themselves.
+# passes to the picker tab, so only a standalone picker probes itself.
 function Get-HubAvailableTools {
     if ($null -ne $env:AGENT_HUB_AVAILABLE_TOOLS) { return @($env:AGENT_HUB_AVAILABLE_TOOLS -split ',' | Where-Object { $_ }) }
     if ($env:AGENT_HUB_BACKEND -eq 'windows') {
@@ -101,7 +101,7 @@ function Get-HubClaudeAccountColor([string]$key) {
     '#{0:X2}{1:X2}{2:X2}' -f ($r, $g, $b | ForEach-Object { [int][Math]::Round(($_ + $value - $chroma) * 255) })
 }
 
-# The active account is shared by every picker: Alt-A in the Claude picker or an Alt-T account row sets it, and
+# The active account is saved state: Alt-A or an Alt-T account row sets it, and
 # every Claude launch or handoff uses it. A missing or vanished account falls back to the first.
 function Get-HubClaudeAccountFile { Join-Path (Join-Path $env:LOCALAPPDATA 'AgentSessionHub') 'claude-account.txt' }
 
@@ -118,7 +118,7 @@ function Set-HubClaudeActiveAccount($account) {
     [IO.File]::WriteAllText($file, $account.Name)
 }
 
-# The current tool leads as "Open (...)"; with several Claude logins that is the active account.
+# The conversation's own tool leads as "Open (...)"; with several Claude logins that is the active account.
 function Get-HubTransferTargets([string]$currentTool, [string[]]$enabledTools, $accounts, $activeAccount) {
     $targets = @(foreach ($tool in @($currentTool) + @($enabledTools | Where-Object { $_ -ne $currentTool })) {
         if ($tool -eq 'claude') {

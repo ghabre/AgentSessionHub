@@ -12,7 +12,7 @@ $backend = 'windows'
 $oldClaudeConfig = $env:CLAUDE_CONFIG_DIR
 $oldLocalAppData = $env:LOCALAPPDATA
 $availableTools = @('codex', 'claude', 'opencode')
-$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-codex.ps1'), [ref]$null, [ref]$null)
+$ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-history.ps1'), [ref]$null, [ref]$null)
 foreach ($name in @('ConvertTo-WslPath', 'ConvertFrom-WslPath', 'New-BashCommand')) {
     $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Invoke-Expression $fn.Extent.Text
@@ -37,7 +37,6 @@ try {
     New-Item -ItemType Directory $devWin, (Join-Path $homeWin '.claude-3'), (Join-Path $homeWin '.claude-notes') | Out-Null
     [IO.File]::WriteAllText((Join-Path $devWin '.claude.json'), '{ "oauthAccount": { "emailAddress": "dev@example.com" } }')
     Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
-    $hubTool = 'claude'
     . (Join-Path $PSScriptRoot 'handoff-sync.ps1')
     $engineCopy = Join-Path $tmpWin 'handoff_sync.py'
     Copy-Item (Join-Path $PSScriptRoot 'handoff_sync.py') $engineCopy
@@ -47,7 +46,7 @@ try {
     $sourceFile = Join-Path $claudeWin "$claudeId.jsonl"
     $row = @{ type = 'user'; cwd = $homeWin; message = @{ content = 'Original task' } }
     [System.IO.File]::WriteAllText($sourceFile, ($row | ConvertTo-Json -Compress -Depth 5) + "`n")
-    $items = @([pscustomobject]@{ Id = $claudeId; Title = "Task O'Brien"; Cwd = $homeWin })
+    $items = @([pscustomobject]@{ Id = $claudeId; Tool = 'claude'; Title = "Task O'Brien"; Cwd = $homeWin })
     Invoke-HubTransfer 'codex' $items $homeWin
     Assert-True ($script:launches.Count -eq 1) 'First transfer did not launch.'
     $first = Get-Content (Join-Path $tmpWin 'sync-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -84,34 +83,27 @@ try {
     $accounts = @(Get-HubClaudeAccounts -New)
     Assert-True ($accounts.Count -eq 4 -and $accounts[3].Name -eq '.claude-4') 'New account was not appended.'
 
-    $claudeAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-claude.ps1'), [ref]$null, [ref]$null)
-    # Run the generated scanner/backup against the shared history, including prompt history.
+    # Run the generated backup against the shared history, including prompt history.
     $backupEvery = 24
     $backupKeep = 10
-    foreach ($variable in @('scanSh', 'backupSh')) {
-        $assignment = $claudeAst.Find({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq ('$' + $variable) }, $true)
-        Invoke-Expression $assignment.Extent.Text
-    }
-    $scanFile = Join-Path $tmpWin 'profile-scan.sh'
+    $backupPyWsl = ''
+    $assignment = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$backupSh' }, $true)
+    Invoke-Expression $assignment.Extent.Text
     $backupFile = Join-Path $tmpWin 'profile-backup.sh'
-    [IO.File]::WriteAllText($scanFile, $scanSh)
     [IO.File]::WriteAllText($backupFile, $backupSh)
     $archiveReader = Join-Path $tmpWin 'read-history.sh'
     [IO.File]::WriteAllText($archiveReader, 'tar -xOzf "$1" history.jsonl' + "`n")
     $configBash = "$bashHome/.claude"
     [IO.File]::WriteAllText((Join-Path $homeWin '.claude\history.jsonl'), 'shared')
-    $scanRows = @(& $gitBash (ConvertTo-WslPath $scanFile) all $configBash)
-    Assert-True ($scanRows.Count -gt 0) 'No transcripts scanned.'
-    foreach ($scanRow in $scanRows) { Assert-True (($scanRow -split "`t")[1].StartsWith("$configBash/projects/")) 'Scan left the shared history.' }
     $archiveDir = Join-Path $tmpWin 'backups\claude'
-    $archives = @(& $gitBash (ConvertTo-WslPath $backupFile) (ConvertTo-WslPath $archiveDir) $configBash)
+    $archives = @(& $gitBash (ConvertTo-WslPath $backupFile) claude (ConvertTo-WslPath $archiveDir) $configBash)
     Assert-True ($archives.Count -eq 1) 'No backup made.'
     $archiveHistory = @(& $gitBash (ConvertTo-WslPath $archiveReader) $archives[0])
     Assert-True ($archiveHistory[0] -ceq 'shared') 'Backup missed the prompt history.'
-    $repeatArchive = @(& $gitBash (ConvertTo-WslPath $backupFile) (ConvertTo-WslPath $archiveDir) $configBash)
+    $repeatArchive = @(& $gitBash (ConvertTo-WslPath $backupFile) claude (ConvertTo-WslPath $archiveDir) $configBash)
     Assert-True ($repeatArchive.Count -eq 0) 'Backup throttle failed.'
 
-    # Execute the real tab builder with a terminal recorder: one Claude tab, no profiles.
+    # Execute the real tab builder with a terminal recorder: one history picker, no profiles.
     $hubScript = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'start-hub.ps1'))
     $hubBuilder = [scriptblock]::Create($hubScript.Substring($hubScript.IndexOf('$tabs = @()')).Replace('$PSScriptRoot', "'" + $PSScriptRoot.Replace("'", "''") + "'"))
     function Record-HubTabs { $script:tabArgs = @($args) }
@@ -119,7 +111,7 @@ try {
     $requested = @('claude')
     $showReminder = $false
     & $hubBuilder 'Record-HubTabs'
-    Assert-True ('-Profile' -notin $script:tabArgs -and @($script:tabArgs | Where-Object { $_ -eq (Join-Path $PSScriptRoot 'recent-claude.ps1') }).Count -eq 1) 'Hub did not open exactly one Claude picker.'
+    Assert-True ('-Profile' -notin $script:tabArgs -and @($script:tabArgs | Where-Object { $_ -eq (Join-Path $PSScriptRoot 'recent-history.ps1') }).Count -eq 1 -and 'active' -in $script:tabArgs) 'Hub did not open the history picker and the active board.'
 
     # Exercise the generated command through native PowerShell and Git Bash, replacing
     # only the target executable with an argument recorder, never starting Codex.
@@ -168,14 +160,13 @@ try {
             $profileArgs = @(Invoke-Expression (New-HubClaudeCommand "claude --resume $claudeId" $account))
             Assert-True ($profileArgs.Count -eq 3 -and $profileArgs[0] -ceq "CONFIG:$expectedDir" -and $profileArgs[2] -eq $claudeId) 'Native Claude profile or resume arguments were damaged.'
         }
-        # Both picker sources must launch fresh handoffs in the selected profile.
+        # Either source agent must launch fresh handoffs in the selected profile.
         foreach ($sourceTool in @('codex', 'opencode')) {
             # Accounts share one Claude destination, so a second pending OpenCode transfer
             # would rightly wait for the first; Codex is already synchronized and resumes.
             foreach ($activeAccount in $(if ($sourceTool -eq 'codex') { $accounts } else { @($accounts[1]) })) {
                 $targetTool = 'claude'
                 Set-HubClaudeActiveAccount $activeAccount
-                $hubTool = $sourceTool
                 $id = if ($sourceTool -eq 'codex') { $codexId } else { 'ses_profile' }
                 $opencodeDbWsl = "$bashHome/override.db"
                 if ($sourceTool -eq 'opencode') {
@@ -193,7 +184,7 @@ with sqlite3.connect(sys.argv[1]) as db:
                         Invoke-Bash $syncRunnerWsl (ConvertTo-WslPath $dbScript) (ConvertTo-WslPath (Join-Path $homeWin 'override.db')) $bashHome
                     }
                 }
-                $profileItems = @([pscustomobject]@{ Id = $id; Title = "Profile O'Brien"; Cwd = $homeWin })
+                $profileItems = @([pscustomobject]@{ Id = $id; Tool = $sourceTool; Title = "Profile O'Brien"; Cwd = $homeWin })
                 $launchCount = $script:launches.Count
                 Invoke-HubTransfer $targetTool $profileItems $homeWin
                 Assert-True ($script:launches.Count -eq $launchCount + 1) "$sourceTool to $($activeAccount.Name) did not launch."
@@ -217,7 +208,7 @@ with sqlite3.connect(sys.argv[1]) as db:
         $backend = 'windows'
 
     } finally { $env:PATH = $oldPath }
-    Write-Output 'Windows integration passed: first transfer, automatic resume, delta, spaces/apostrophes, native launch arguments for all three tools, active account, shared scans/backups, hub tabs, Claude account quoting.'
+    Write-Output 'Windows integration passed: first transfer, automatic resume, delta, spaces/apostrophes, native launch arguments for all three tools, active account, shared backups, hub tabs, Claude account quoting.'
 } finally {
     $env:CLAUDE_CONFIG_DIR = $oldClaudeConfig
     $env:LOCALAPPDATA = $oldLocalAppData
