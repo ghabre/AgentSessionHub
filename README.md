@@ -8,6 +8,7 @@ Each enabled tool gets a session picker with fuzzy search and transcript preview
 - **Conversation handoffs:** Transfer unseen messages and tool notes, resume an existing linked destination, or combine selected conversations.
 - **Claude accounts:** Share session history across logins, with email labels and account-specific tab colors.
 - **Local backups:** Snapshot session history automatically, including OpenCode's SQLite database.
+- **History tab:** One list of conversations across all agents, newest first. A conversation handed between agents appears once, under the agent that used it last.
 - **Active board:** A live tab lists running sessions across all agents with their state, last action and subagents.
 
 ## Get started

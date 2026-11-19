@@ -59,6 +59,9 @@ class Session:
         self.continued = None
         self.history_base = False
         self.active = True
+        self.headless = False
+        self.named = self.inherited = ''
+        self.owners = []
         self.updated = 0
         self._counts = collections.Counter()
 
@@ -68,8 +71,9 @@ class Session:
             return
         if role == 'user':
             inherited = re.search(r'inherited title: ([^\]]+)', text)
-            if inherited and not self.title:
-                self.title = inherited.group(1)
+            if inherited:
+                self.inherited = self.inherited or inherited.group(1)
+                self.title = self.title or inherited.group(1)
             markers = MARKER.findall(text)
             self.markers.extend(markers)
             self.timeline.extend({'transfer': marker} for marker in markers)
@@ -147,6 +151,7 @@ def read_jsonl(path, tool):
                     session.key = tool + ':' + session.id
                     session.cwd = payload.get('cwd') or session.cwd
                     session.history_base = bool(payload.get('history_base'))
+                    session.headless = payload.get('source') == 'exec'
                 if kind == 'response_item':
                     if payload.get('type') == 'message' and payload.get('role') in ('user', 'assistant'):
                         session.add(payload['role'], text_blocks(payload.get('content')), payload.get('id'))
@@ -169,6 +174,13 @@ def read_jsonl(path, tool):
                     continue
                 session.cwd = row.get('relocatedCwd') or session.cwd or row.get('cwd', '')
                 session.title = row.get('customTitle') or row.get('aiTitle') or session.title
+                session.named = row.get('customTitle') or session.named
+                session.headless = session.headless or str(row.get('entrypoint') or '').startswith('sdk-')
+                if kind in ('session-owner', 'history-suppression'):
+                    # The owner record, or the account an owner-mismatch resume ran under; keep each account's latest use.
+                    owner = next((value for name, value in row.items() if name.lower().endswith('accountuuid') and value), None)
+                    if owner:
+                        session.owners = [o for o in session.owners if o != owner] + [owner]
                 session.continued = row.get('continuedInSessionId') or session.continued
                 if kind in ('user', 'assistant'):
                     content = (row.get('message') or {}).get('content')
@@ -227,7 +239,7 @@ def read_sessions(request, db):
                 continue
             seen.add(str(path))
             stat = path.stat()
-            signature = f'4:{stat.st_mtime_ns}:{stat.st_size}'
+            signature = f'5:{stat.st_mtime_ns}:{stat.st_size}'
             cached = db.execute('SELECT signature, data FROM cache WHERE path = ?', (str(path),)).fetchone()
             if cached and cached[0] == signature:
                 session = Session(tool, '')
@@ -501,11 +513,115 @@ def plan(request):
         return result
 
 
+def native_names(request):
+    """Names and live states the CLIs keep outside their transcripts: (names, states) by session key."""
+    names, states = {}, {}
+    codex = Path(native_path(request['codex_root'])).parent
+    index = codex / 'session_index.jsonl'
+    if index.is_file():
+        for line in index.read_text(encoding='utf-8', errors='replace').splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get('id') and row.get('thread_name'):
+                names['codex:' + row['id']] = row['thread_name']
+    databases = sorted(codex.glob('state_*.sqlite'), key=lambda path: path.stat().st_mtime)
+    if databases:
+        with closing(sqlite3.connect(databases[-1].as_uri() + '?mode=ro', uri=True)) as source:
+            names.update(('codex:' + sid, name) for sid, name in
+                         source.execute("SELECT id, name FROM threads WHERE name IS NOT NULL AND trim(name) <> ''"))
+    for path in (Path(native_path(request['claude_root'])).parent / 'sessions').glob('*.json'):
+        try:
+            live = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue  # Claude rewrites these records while it runs.
+        key = 'claude:' + str(live.get('sessionId'))
+        states[key] = live.get('status') or ''
+        name = live.get('name') or ''
+        # Only a name the user set: not a derived one, a slash command, the id or a job id.
+        if name.strip() and live.get('nameSource') != 'derived' and not name.startswith('/') and name not in (live.get('sessionId'), live.get('jobId')):
+            names[key] = name
+    return names, states
+
+
+def short_age(seconds):
+    if seconds < 3600:
+        return f'{int(seconds / 60)}m'
+    if seconds < 48 * 3600:
+        return f'{int(seconds / 3600)}h'
+    if seconds < 14 * 86400:
+        return f'{int(seconds / 86400)}d'
+    return f'{int(seconds / 604800)}w'
+
+
+TOOL_COLORS = {'claude': 208, 'codex': 78, 'opencode': 75}
+
+
+def conversations(request):
+    """Rows for the history picker, newest first. Sessions joined by a transfer or a continuation are one
+    conversation, shown as the member used last; the others are reached through a transfer to their tool.
+
+    Row: display, id, cwd, tool, title, 1 when the CLI holds a user-given name, member keys.
+    """
+    directory = Path(native_path(request['state_dir']))
+    migrate_state(directory, request.get('legacy_state_dir'))
+    with closing(open_ledger(directory)) as db, closing(open_cache(Path(native_path(request.get('cache_db') or str(directory / 'cache.db'))), db)) as cache, cache:
+        sessions = read_sessions(request, cache)
+        sources = {tid: json.loads(value) for tid, value in db.execute('SELECT id, sources FROM transfers')}
+        received = db.execute('SELECT transfer_id, session FROM receipts').fetchall()
+    root = {}
+
+    def find(key):
+        while root.setdefault(key, key) != key:
+            root[key] = key = root[root[key]]
+        return key
+
+    for session in sessions.values():
+        received.extend((marker, session.key) for marker in session.markers)
+        for predecessor in session.legacy:
+            root[find(predecessor)] = find(session.key)
+    for tid, key in received:
+        for source in sources.get(tid, ()):
+            root[find(source)] = find(key)
+
+    hidden = {key.lower() for key in request.get('hidden', ())}
+    listed = [s for s in sessions.values() if s.active and not s.headless and s.cwd and s.tool in request['tools']
+              and (s.key.lower() in hidden) == bool(request.get('hidden_only'))]
+    groups = collections.defaultdict(list)
+    for session in listed:
+        # Hidden sessions are listed one by one, so each can be shown again on its own.
+        groups[session.key if request.get('hidden_only') else find(session.key)].append(session)
+    names, states = native_names(request)
+    owners = request.get('owner_labels') or {}
+    now = time.time()
+    cutoff = 0 if request.get('hidden_only') else (now - request['days'] * 86400) * 1e9
+    rows = []
+    for members in sorted(groups.values(), key=lambda group: -max(s.updated for s in group)):
+        members.sort(key=lambda s: -s.updated)
+        current = members[0]
+        if current.updated < cutoff:
+            continue
+        named = names.get(current.key)
+        title = ' '.join((named or current.named or current.inherited or current.title or 'Untitled session').split())
+        folder = '/'.join(re.split(r'[\\/]+', current.cwd.rstrip('\\/'))[-2:])
+        others = list(dict.fromkeys(s.tool for s in members[1:] if s.tool != current.tool))
+        state = states.get(current.key, '')
+        accounts = [owners[o] for o in current.owners if o in owners]
+        display = (f"{short_age(now - current.updated / 1e9):>3}  \x1b[38;5;{TOOL_COLORS[current.tool]}m{current.tool:<8}\x1b[0m  {folder} - {title[:50]}"
+                   + (f'  <- {", ".join(others)}' if others else '')
+                   + (f'  [{state}]' if state and state != 'idle' else '')
+                   + (f"  @{'>'.join(accounts)}" if accounts else ''))
+        rows.append('\t'.join([display, current.id, current.cwd, current.tool, title, str(int(bool(named))), ','.join(s.key for s in members)]))
+    return rows
+
+
 def main():
     if sys.argv[1] == 'preview':
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         return preview(*sys.argv[2:5])
-    request_path, result_path = (native_path(value) for value in sys.argv[1:3])
+    listing = sys.argv[1] == 'list'
+    request_path, result_path = (native_path(value) for value in sys.argv[2 if listing else 1:][:2])
     with open(request_path, encoding='utf-8-sig') as stream:
         request = json.load(stream)
     scope = request.get('scope')
@@ -518,6 +634,10 @@ def main():
     local = os.environ.get('LOCALAPPDATA') or os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache'
     request['cache_db'] = str(Path(local) / 'AgentSessionHub' / (scope + '-cache.db'))
     try:
+        if listing:
+            with open(result_path, 'w', encoding='utf-8', newline='\n') as stream:
+                stream.writelines(row + '\n' for row in conversations(request))
+            return
         result = plan(request)
     except (OSError, ValueError, sqlite3.Error) as error:
         result = {'status': 'error', 'message': str(error)}

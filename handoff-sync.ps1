@@ -105,7 +105,8 @@ function Invoke-HubTransfer($tool, $items, $cwd) {
             legacy_state_dir = ConvertTo-WslPath (Join-Path $hubStateDir $stateName)
             codex_root = "$bashHome/.codex/sessions"
             opencode_db = $opencodeDbWsl
-            sources = @($items | ForEach-Object { "${hubTool}:$($_.Id)" })
+            # History rows name their own tool; a per-agent picker's rows are all its own.
+            sources = @($items | ForEach-Object { "$(if ($_.Tool) { $_.Tool } else { $hubTool }):$($_.Id)" })
             tool = $tool
             preview = $true
         }

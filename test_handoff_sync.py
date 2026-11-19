@@ -12,7 +12,7 @@ import unittest
 import contextlib
 import io
 
-from handoff_sync import plan, preview
+from handoff_sync import conversations, plan, preview
 
 LINK_SCRIPT = Path(__file__).with_name('claude-accounts.sh')
 
@@ -68,6 +68,35 @@ class TransferTests(unittest.TestCase):
 
     def payload(self, result):
         return Path(result['handoff']).read_text()
+
+    def listed(self, **options):
+        rows = [row.split('\t') for row in conversations({**self.request, 'tools': list(IDS), 'days': 40, **options})]
+        return sorted((row[3], row[4], sorted(row[6].split(','))) for row in rows)
+
+    def test_history_shows_a_transferred_conversation_once_under_its_latest_agent(self):
+        other = '33333333-3333-3333-3333-333333333333'
+        self.append('codex', 'codex work')
+        self.append('claude', 'unrelated chat', sid=other)
+        self.accept(self.transfer([self.key('codex')], 'claude'), 'claude')
+        earlier = os.path.getmtime(self.request['opencode_db']) - 60
+        os.utime(Path(self.request['codex_root']) / f"rollout-{IDS['codex']}.jsonl", (earlier, earlier))
+
+        self.assertEqual(self.listed(), [('claude', 'Example', sorted([self.key('claude'), self.key('codex')])),
+                                         ('claude', 'unrelated chat', [self.key('claude', other)])])
+        # Hiding the latest member leaves the conversation under the one before it.
+        self.assertEqual(self.listed(hidden=[self.key('claude'), self.key('claude', other)]), [('codex', 'codex work', [self.key('codex')])])
+        self.assertEqual(self.listed(hidden=[self.key('claude')], hidden_only=True), [('claude', 'Example', [self.key('claude')])])
+        self.assertEqual(self.listed(tools=['codex']), [('codex', 'codex work', [self.key('codex')])])
+
+    def test_history_leaves_out_headless_runs_and_old_conversations(self):
+        self.append('claude', 'interactive chat')
+        for sid, row in (('44444444-4444-4444-4444-444444444444', {'type': 'user', 'cwd': '/w', 'entrypoint': 'sdk-cli', 'message': {'content': 'scripted'}}),
+                         ('55555555-5555-5555-5555-555555555555', {'type': 'user', 'cwd': '/w', 'message': {'content': 'last year'}})):
+            path = Path(self.request['claude_root']) / (sid + '.jsonl')
+            path.write_text(json.dumps(row) + '\n', encoding='utf-8')
+        os.utime(path, (1e9, 1e9))
+
+        self.assertEqual(self.listed(), [('claude', 'interactive chat', [self.key('claude')])])
 
     def test_preview_shows_the_last_chat_turns_of_each_tool(self):
         for tool in ('codex', 'claude', 'opencode'):
