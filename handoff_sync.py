@@ -611,7 +611,8 @@ def conversations(request):
         display = (f"{short_age(now - current.updated / 1e9):>3}  \x1b[38;5;{TOOL_COLORS[current.tool]}m{current.tool:<8}\x1b[0m  {folder} - {title[:50]}"
                    + (f'  <- {", ".join(others)}' if others else '')
                    + (f'  [{state}]' if state and state != 'idle' else '')
-                   + (f"  @{'>'.join(accounts)}" if accounts else ''))
+                   + (f"  @{'>'.join(accounts)}" if accounts else '')
+                   + f"  [..-{current.id.split('-')[-1]}]")
         rows.append('\t'.join([display, current.id, current.cwd, current.tool, title, str(int(bool(named))), ','.join(s.key for s in members)]))
     return rows
 
