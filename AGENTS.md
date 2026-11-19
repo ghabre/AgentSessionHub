@@ -10,6 +10,7 @@ This repository contains Windows launchers and PowerShell utilities for Codex, C
 
 - `recent-codex.ps1`, `recent-claude.ps1` and `recent-opencode.ps1` are session pickers that create backups, export handoffs, and launch Windows Terminal tabs.
 - `AgentSessionHub.cmd` and `Agent Session Hub.lnk` open the enabled pickers as tabs. The per-machine, gitignored `agent-hub.config`, created all-on at first launch, turns each of `codex`, `claude` and `opencode` on or off. `codex.cmd`, `claude.cmd` and `opencode.cmd` remain portable helpers; keep launchers aligned with their PowerShell scripts.
+- `hub_board.py` is the hub's `active` tab: a read-only live board of running sessions and their subagents, run in the selected backend.
 - `fixclip.ps1` and `fixclip.cmd` repair text clipboard forwarding in RDP scenarios.
 - `backups/{codex,claude,opencode}/` contains generated transcript/database archives. Treat these as data, not source, and do not edit archives manually.
 

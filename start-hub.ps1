@@ -20,7 +20,15 @@ foreach ($tool in @('codex', 'claude', 'opencode')) {
     if ($tabs.Count) { $tabs += ';' }
     $tabs += @('new-tab', '--title', $tool, 'powershell.exe', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot "recent-$tool.ps1"))
 }
-if ($tabs.Count) { & $args[0] -w $env:AGENT_SESSION_HUB_WINDOW @tabs }
+if ($tabs.Count) {
+    # The board reads the session stores, so it runs in the backend that holds them.
+    $board = if ($env:AGENT_HUB_BACKEND -eq 'windows') { @('python', (Join-Path $PSScriptRoot 'hub_board.py')) } else {
+        @('wsl.exe') + @(if ($env:WSL_DISTRO) { '-d', $env:WSL_DISTRO }) + @(if ($env:WSL_USER) { '-u', $env:WSL_USER }) +
+            @('--cd', $PSScriptRoot, '--', 'python3', 'hub_board.py')
+    }
+    $tabs += @(';', 'new-tab', '--title', 'active') + $board
+    & $args[0] -w $env:AGENT_SESSION_HUB_WINDOW @tabs
+}
 if (-not $tabs.Count) { Write-Host 'No enabled CLIs are available. Check agent-hub.config and CLI installation.' }
 if ($showReminder) {
     # Keep the weekly installation reminder visible when launched from a shortcut.
