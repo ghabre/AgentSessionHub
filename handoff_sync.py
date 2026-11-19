@@ -514,8 +514,8 @@ def plan(request):
 
 
 def native_names(request):
-    """Names and live states the CLIs keep outside their transcripts: (names, states) by session key."""
-    names, states = {}, {}
+    """Names the CLIs keep outside their transcripts, by session key."""
+    names = {}
     codex = Path(native_path(request['codex_root'])).parent
     index = codex / 'session_index.jsonl'
     if index.is_file():
@@ -536,13 +536,11 @@ def native_names(request):
             live = json.loads(path.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             continue  # Claude rewrites these records while it runs.
-        key = 'claude:' + str(live.get('sessionId'))
-        states[key] = live.get('status') or ''
         name = live.get('name') or ''
         # Only a name the user set: not a derived one, a slash command, the id or a job id.
         if name.strip() and live.get('nameSource') != 'derived' and not name.startswith('/') and name not in (live.get('sessionId'), live.get('jobId')):
-            names[key] = name
-    return names, states
+            names['claude:' + str(live.get('sessionId'))] = name
+    return names
 
 
 def short_age(seconds):
@@ -592,7 +590,7 @@ def conversations(request):
     for session in listed:
         # Hidden sessions are listed one by one, so each can be shown again on its own.
         groups[session.key if request.get('hidden_only') else find(session.key)].append(session)
-    names, states = native_names(request)
+    names = native_names(request)
     owners = request.get('owner_labels') or {}
     now = time.time()
     cutoff = 0 if request.get('hidden_only') else (now - request['days'] * 86400) * 1e9
@@ -606,11 +604,9 @@ def conversations(request):
         title = ' '.join((named or current.named or current.inherited or current.title or 'Untitled session').split())
         folder = '/'.join(re.split(r'[\\/]+', current.cwd.rstrip('\\/'))[-2:])
         others = list(dict.fromkeys(s.tool for s in members[1:] if s.tool != current.tool))
-        state = states.get(current.key, '')
         accounts = [owners[o] for o in current.owners if o in owners]
         display = (f"{short_age(now - current.updated / 1e9):>3}  \x1b[38;5;{TOOL_COLORS[current.tool]}m{current.tool:<8}\x1b[0m  {folder} - {title[:50]}"
                    + (f'  <- {", ".join(others)}' if others else '')
-                   + (f'  [{state}]' if state and state != 'idle' else '')
                    + (f"  @{'>'.join(accounts)}" if accounts else '')
                    + f"  [..-{current.id.split('-')[-1]}]")
         rows.append('\t'.join([display, current.id, current.cwd, current.tool, title, str(int(bool(named))), ','.join(s.key for s in members)]))
