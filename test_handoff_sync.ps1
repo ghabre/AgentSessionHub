@@ -13,7 +13,7 @@ $oldClaudeConfig = $env:CLAUDE_CONFIG_DIR
 $oldLocalAppData = $env:LOCALAPPDATA
 $availableTools = @('codex', 'claude', 'opencode')
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'recent-history.ps1'), [ref]$null, [ref]$null)
-foreach ($name in @('ConvertTo-WslPath', 'ConvertFrom-WslPath', 'New-BashCommand')) {
+foreach ($name in @('ConvertTo-WslPath', 'ConvertFrom-WslPath', 'New-BashCommand', 'Select-SessionFolder', 'Invoke-NewSession')) {
     $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     Invoke-Expression $fn.Extent.Text
 }
@@ -82,6 +82,60 @@ try {
     Assert-True ((Get-HubClaudeActiveAccount @($accounts[0..1])).Shared) 'Vanished account was still active.'
     $accounts = @(Get-HubClaudeAccounts -New)
     Assert-True ($accounts.Count -eq 4 -and $accounts[3].Name -eq '.claude-4') 'New account was not appended.'
+
+    & {
+        $savedNewRoot = $env:AGENT_HUB_NEW_ROOT
+        try {
+            $env:AGENT_HUB_NEW_ROOT = $null
+            $assignment = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$newRoot' }, $true)
+            $rootAssignment = $assignment.Extent.Text.Replace('$PSScriptRoot', "'" + $PSScriptRoot.Replace("'", "''") + "'")
+            Invoke-Expression $rootAssignment
+            Assert-True ($newRoot -eq (Split-Path $PSScriptRoot -Parent) -and (Test-Path -LiteralPath $newRoot)) 'Default project root does not follow the checkout.'
+            $env:AGENT_HUB_NEW_ROOT = $homeWin
+            Invoke-Expression $rootAssignment
+            Assert-True ($newRoot -eq $homeWin) 'Project root override was ignored.'
+        } finally { $env:AGENT_HUB_NEW_ROOT = $savedNewRoot }
+        $dirListWin = Join-Path $tmpWin 'new-dirs.txt'; $dirListWsl = $dirListWin
+        $pickWin = Join-Path $tmpWin 'new-pick.txt'; $pickWsl = $pickWin
+        $scanDirShWsl = 'scan'; $fzfDirShWsl = 'folders'
+        $script:account = $accounts[0]
+        function Invoke-Bash($shellFile, $listFile, $pickFile) {
+            if ($shellFile -eq 'scan') { return }
+            $row = if ($createProject) { 1 } else { 0 }
+            [IO.File]::WriteAllText($pickFile, @(Get-Content -LiteralPath $listFile)[$row])
+        }
+        function Open-WtTab($title, $cwd, $command) {
+            Assert-True ($cwd -eq $expectedCwd) 'New session launched in the wrong folder.'
+            Assert-True ($command.Contains($targetTool) -and $command -notmatch '\bresume\b|--session') 'New session did not use a fresh agent command.'
+        }
+        foreach ($backend in @('windows', 'wsl')) {
+            $newRootWsl = ConvertTo-WslPath $newRoot
+            $expectedCwd = if ($backend -eq 'windows') { $newRoot } else { $newRootWsl }
+            foreach ($targetTool in @('codex', 'claude', 'opencode')) { Invoke-NewSession $targetTool }
+        }
+        $backend = 'windows'
+        $newRootWsl = ConvertTo-WslPath $newRoot
+        $createProject = $true
+        function Read-Host { 'new-project' }
+        function Invoke-Git { $global:LASTEXITCODE = 0; 'Git command output' }
+        $created = @(Select-SessionFolder 'codex')
+        Assert-True ($created.Count -eq 1 -and $created[0].Path -eq (Join-Path $newRoot 'new-project')) 'New project selection returned Git output instead of its folder.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $created[0].Path 'AGENTS.md')) 'New project was not initialized.'
+        $fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Open-WtTab' }, $true)
+        Invoke-Expression $fn.Extent.Text
+        function Start-Sleep { }
+        $script:recordedTab = @()
+        function Record-SessionTab { $script:recordedTab = @($args) }
+        $wt = 'Record-SessionTab'; $tabShell = 'pwsh.exe'
+        function Select-SessionFolder { [pscustomobject]@{ Path = $homeWin } }
+        Open-WtTab 'test' (Join-Path $root 'moved-project') 'codex'
+        $cwdIndex = [array]::IndexOf($script:recordedTab, '-d') + 1
+        Assert-True ($script:recordedTab[$cwdIndex] -eq $homeWin -and '-NoExit' -in $script:recordedTab) 'Missing-folder recovery or visible launch errors failed.'
+        $script:recordedTab = @()
+        function Select-SessionFolder { return $null }
+        Open-WtTab 'test' (Join-Path $root 'moved-project') 'claude'
+        Assert-True (-not $script:recordedTab.Count) 'Cancelling missing-folder recovery launched an agent.'
+    }
 
     # Run the generated backup against the shared history, including prompt history.
     $backupEvery = 24

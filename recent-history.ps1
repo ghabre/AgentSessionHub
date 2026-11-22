@@ -157,6 +157,12 @@ if ($wt) { $wt = $wt.Source } else { $wt = "$env:LOCALAPPDATA\Microsoft\WindowsA
 # $color, when given, is the tab color: Claude tabs carry their account's.
 # Window 0 is the one in use: the picker's own, wherever its tab has been moved.
 function Open-WtTab($title, $cwd, $command, $color) {
+    while ($backend -eq 'windows' -and -not (Test-Path -LiteralPath $cwd -PathType Container)) {
+        Write-Host "Working folder no longer exists: $cwd. Choose its current location."
+        $folder = Select-SessionFolder 'session'
+        if (-not $folder) { return }
+        $cwd = $folder.Path
+    }
     # Windows PowerShell 5 passes embedded double quotes to wt.exe unescaped, merging arguments.
     $title = $title -replace '"', "'"
     $colorArgs = @(if ($color) { '--tabColor', $color })
@@ -165,7 +171,7 @@ function Open-WtTab($title, $cwd, $command, $color) {
             wsl.exe -d $distro --cd ($cwd -replace ';', '\;') -- bash -lic ($command -replace ';', '\;')
     } else {
         & $wt -w 0 new-tab --title ($title -replace ';', '\;') @colorArgs -d ($cwd -replace ';', '\;') `
-            $tabShell -NoLogo -Command ($command -replace ';', '\;')
+            $tabShell -NoLogo -NoExit -Command ($command -replace ';', '\;')
     }
     Start-Sleep -Milliseconds 300   # let wt register each tab before the next
 }
@@ -301,7 +307,7 @@ $clickBinds
 # --- New-session support -----------------------------------------------------------
 # Root that the folder picker lists (immediate subfolders become new-session choices).
 # Its first row can also create an initialized local Git project under this root.
-$newRoot    = if ($env:AGENT_HUB_NEW_ROOT) { $env:AGENT_HUB_NEW_ROOT } else { 'C:\G\code' }
+$newRoot    = if ($env:AGENT_HUB_NEW_ROOT) { $env:AGENT_HUB_NEW_ROOT } else { Split-Path $PSScriptRoot -Parent }
 $newRootWsl = ConvertTo-WslPath $newRoot
 $dirListWin = Join-Path $tmpWin 'dirs.txt'; $dirListWsl = "$tmpWsl/dirs.txt"
 
@@ -322,8 +328,8 @@ $fzfDirSh = @"
 tr -d '\r' < "`$1" | "$fzfPath" \
     --with-nth=1 --delimiter=`$'\t' \
 $clickBinds
-    --prompt="new `$3 session in> " --reverse \
-    --header="click to highlight, click again to start a new `$3 session here | esc: cancel" \
+    --prompt="`$3 folder> " --reverse \
+    --header="click to highlight, click again to choose this folder | esc: cancel" \
     > "`$2"
 "@ -replace "`r`n","`n"
 [System.IO.File]::WriteAllText($fzfDirShWin, $fzfDirSh)
@@ -611,7 +617,7 @@ function Update-List {
 # open the chosen one as a fresh session (no resume) in its own Windows Terminal tab.
 # $tool ('claude', 'codex', 'opencode') is the ONLY difference between the flows -- it labels
 # the picker and is the command the tab runs -- so all share this one function.
-function Invoke-NewSession($tool) {
+function Select-SessionFolder($tool) {
     $dirs = Invoke-Bash $scanDirShWsl
     $rootName = Split-Path ($newRoot.TrimEnd('\')) -Leaf
     $rootRow = "$rootName/ (project root)`t$newRootWsl`t$rootName"
@@ -654,17 +660,24 @@ After every completed repository change, automatically create a local Git commit
 '@ -replace "`r`n","`n"
         [System.IO.File]::WriteAllText((Join-Path $newPathWin 'AGENTS.md'), $instructions)
         [System.IO.File]::WriteAllText((Join-Path $newPathWin 'CLAUDE.md'), $instructions)
-        Invoke-Git -C $path init --initial-branch=main
+        Invoke-Git -C $path init --initial-branch=main | Out-Host
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not initialize Git in $newPathWin"; Start-Sleep -Milliseconds 900; return }
-        Invoke-Git -C $path add AGENTS.md CLAUDE.md
+        Invoke-Git -C $path add AGENTS.md CLAUDE.md | Out-Host
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not stage project instructions"; Start-Sleep -Milliseconds 900; return }
-        Invoke-Git -C $path commit -m "Initialize project instructions"
+        Invoke-Git -C $path commit -m "Initialize project instructions" | Out-Host
         if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
+    [pscustomobject]@{ Name = $name; Path = $path }
+}
+
+function Invoke-NewSession($tool) {
+    $folder = Select-SessionFolder $tool
+    if (-not $folder) { return }
+    $name = $folder.Name
     $title = if ($tool -eq 'claude') { $name } else { "${tool}: $name" }
     $command = if ($tool -eq 'claude') { New-HubClaudeCommand 'claude' $script:account } elseif ($tool -eq 'codex') { 'codex -c tui.fullscreen_transcript=false' } else { $tool }
-    Open-WtTab $title $path $command $(if ($tool -eq 'claude') { $script:account.Color })
+    Open-WtTab $title $folder.Path $command $(if ($tool -eq 'claude') { $script:account.Color })
 }
 
 # Pick the folder the combined session runs in. The marked sessions may span different

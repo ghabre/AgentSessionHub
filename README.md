@@ -67,7 +67,7 @@ For a Claude conversation, choosing another Claude account through Alt+T resumes
 
 ## Paths and local data
 
-The default new-project root is `C:\G\code`. Override it with `AGENT_HUB_NEW_ROOT`, a Windows path.
+Override the new-project root with `AGENT_HUB_NEW_ROOT`, a Windows path.
 
 For WSL, `WSL_DISTRO` selects a distribution and `WSL_USER` overrides home-directory discovery. OpenCode database discovery respects `OPENCODE_DB` and `XDG_DATA_HOME` in the selected backend.
 
