@@ -11,6 +11,8 @@ Reopen a conversation in its project folder, continue it in another agent, or sw
 - **Claude accounts:** Share session history across logins, with email labels and account-specific tab colors.
 - **Local backups:** Snapshot session history automatically, including OpenCode's SQLite database.
 
+For a desktop app with tabs, per-folder history and the same console hub built in, see [agent-terminal-fork](https://github.com/ghabre/agent-terminal-fork): Jaafar Serhal's Agent Terminal, which took this hub in as its console front end.
+
 ## Get started
 
 Install Windows Terminal and Git, plus the tools required by your chosen backend:
@@ -19,6 +21,8 @@ Install Windows Terminal and Git, plus the tools required by your chosen backend
 | --- | --- |
 | WSL2 (default) | WSL2 with Bash, Linux `fzf`, Python 3.8+ with SQLite, and at least one supported agent CLI installed and signed in inside WSL. CLIs must be available in the login shell. |
 | Native Windows | Git for Windows in its standard installation location, Windows `fzf`, Python 3.8+ with SQLite, PowerShell 7, and at least one supported agent CLI installed and signed in on Windows. |
+
+On Windows: `winget install Microsoft.WindowsTerminal Git.Git junegunn.fzf Microsoft.PowerShell Python.Python.3.12`. Inside WSL: `sudo apt install fzf python3`. The distribution's `fzf` must support `--bind` with `transform` (fzf 0.45 or newer); Ubuntu 24.04 and older ship an older one, so take a [release binary](https://github.com/junegunn/fzf/releases) into `~/.local/bin` there.
 
 Clone onto a Windows drive and launch from **Windows PowerShell**:
 
@@ -33,6 +37,12 @@ For native Windows agents, set the backend before launching:
 ```powershell
 $env:AGENT_HUB_BACKEND = 'windows'
 .\AgentSessionHub.cmd
+```
+
+To keep it for every launch, including shortcuts to `AgentSessionHub.cmd`, set it once for your user and open a new terminal:
+
+```powershell
+[Environment]::SetEnvironmentVariable('AGENT_HUB_BACKEND', 'windows', 'User')
 ```
 
 ## Choose which agents appear
@@ -67,7 +77,7 @@ For a Claude conversation, choosing another Claude account through Alt+T resumes
 
 ## Paths and local data
 
-Override the new-project root with `AGENT_HUB_NEW_ROOT`, a Windows path.
+New sessions start in a project folder under the folder that contains this checkout (for `C:\code\AgentSessionHub`, that is `C:\code`). Override it with `AGENT_HUB_NEW_ROOT`, a Windows path.
 
 For WSL, `WSL_DISTRO` selects a distribution and `WSL_USER` overrides home-directory discovery. OpenCode database discovery respects `OPENCODE_DB` and `XDG_DATA_HOME` in the selected backend.
 
