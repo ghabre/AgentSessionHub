@@ -51,4 +51,4 @@ Run the checks in the README's Development section and parser-check every modifi
 
 ## Commit & Pull Request Guidelines
 
-No Git history is available in this directory, so use short imperative commits such as `Fix Codex handoff quoting`. Keep changes focused. Pull requests should describe the user-visible behavior, Windows/WSL versions tested, manual test cases, and any new prerequisites or environment variables. Include screenshots only for visible picker or terminal changes; never attach transcript backups.
+Use short imperative commits such as `Fix Codex handoff quoting`. Keep changes focused. Pull requests should describe the user-visible behavior, Windows/WSL versions tested, manual test cases, and any new prerequisites or environment variables. Include screenshots only for visible picker or terminal changes; never attach transcript backups.
