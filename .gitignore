@@ -4,4 +4,17 @@ backups/
 # Per-machine list of enabled CLIs, created at first launch.
 agent-hub.config
 .vs/
+.vscode/
 __pycache__/
+node_modules/
+
+# A Claude Code config folder, written here when Claude runs with CLAUDE_CONFIG_DIR set to
+# this checkout. It holds transcripts and prompt history, so it must never be committed.
+/cache/
+/plugins/
+/projects/
+/sessions/
+/history.jsonl
+/settings.json
+/.last-update-result.json
+/.credentials.json
