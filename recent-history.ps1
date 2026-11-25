@@ -143,9 +143,6 @@ function New-BashCommand([string[]]$arguments) {
     $prefix + ($quoted -join ' ')
 }
 
-function Invoke-Git {
-    if ($backend -eq 'wsl') { wsl.exe -d $distro -- git @args } else { git @args }
-}
 $hubStateDir = Join-Path $env:LOCALAPPDATA 'AgentSessionHub'
 
 # Locate wt.exe (may not be on PATH depending on launch context)
@@ -649,23 +646,6 @@ function Select-SessionFolder($tool) {
         }
         New-Item -ItemType Directory -Path $newPathWin | Out-Null
         $path = if ($backend -eq 'wsl') { ConvertTo-WslPath $newPathWin } else { $newPathWin }
-        $instructions = @'
-# Agent Instructions
-
-Keep `AGENTS.md` and `CLAUDE.md` synchronized whenever either instruction file changes.
-
-## Local Commit Policy
-
-After every completed repository change, automatically create a local Git commit with a concise, meaningful message describing the result. Do not wait for a separate request. Keep commits focused, verify the staged diff, and never push to an origin or other remote unless the user explicitly requests it.
-'@ -replace "`r`n","`n"
-        [System.IO.File]::WriteAllText((Join-Path $newPathWin 'AGENTS.md'), $instructions)
-        [System.IO.File]::WriteAllText((Join-Path $newPathWin 'CLAUDE.md'), $instructions)
-        Invoke-Git -C $path init --initial-branch=main | Out-Host
-        if ($LASTEXITCODE -ne 0) { Write-Host "Could not initialize Git in $newPathWin"; Start-Sleep -Milliseconds 900; return }
-        Invoke-Git -C $path add AGENTS.md CLAUDE.md | Out-Host
-        if ($LASTEXITCODE -ne 0) { Write-Host "Could not stage project instructions"; Start-Sleep -Milliseconds 900; return }
-        Invoke-Git -C $path commit -m "Initialize project instructions" | Out-Host
-        if ($LASTEXITCODE -ne 0) { Write-Host "Could not create the initial commit; check your Git user configuration"; Start-Sleep -Milliseconds 1200; return }
     }
     if (-not $path) { Write-Host "Could not parse folder pick: $($p[0])"; Start-Sleep -Milliseconds 800; return }
     [pscustomobject]@{ Name = $name; Path = $path }
